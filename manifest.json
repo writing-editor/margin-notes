@@ -1,0 +1,10 @@
+{
+  "id": "margin-notes",
+  "name": "Margin Notes",
+  "version": "0.2.0",
+  "minAppVersion": "1.4.0",
+  "description": "Literal book-margin notes ([mn: ...]) with per-file selective activation and an optional AI notes agent, ported from the ManuScript app's CodeMirror 6 editor.",
+  "author": "you",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,23 @@
+{
+  "name": "margin-notes",
+  "version": "0.2.0",
+  "description": "Literal book-margin notes for Obsidian, with an optional AI notes agent, ported from the ManuScript app.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.16.0",
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "^6.28.0",
+    "@types/node": "^20.11.30",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.20.2",
+    "obsidian": "^1.5.7",
+    "tslib": "^2.6.2",
+    "typescript": "^5.4.5"
+  }
+}

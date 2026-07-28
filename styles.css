@@ -1,0 +1,67 @@
+/* --- Literal margin: reserve space beside the text --- */
+/* Only applied to editors whose file matched the enablement rule; every
+   other open file is untouched. mn-has-margin is toggled by marginPanel.ts. */
+
+.cm-scroller.mn-has-margin .cm-content {
+  margin-right: var(--mn-margin-width, 220px) !important;
+}
+
+/* Obsidian's "readable line length" centers .cm-content with a max-width;
+   without this override the margin column would overlap the centered text
+   instead of sitting in genuinely empty space. */
+.is-readable-line-width .cm-scroller.mn-has-margin .cm-content {
+  max-width: none !important;
+}
+
+.mn-margin-track {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  width: calc(var(--mn-margin-width, 220px) - 16px);
+  pointer-events: none;
+}
+
+/* --- Inline note anchors (superscript markers in the running text) --- */
+
+.mn-anchor {
+  cursor: pointer;
+}
+
+.mn-marker {
+  /* colour set inline per-note from noteTypes.ts */
+  font-weight: 600;
+  padding: 0 1px;
+}
+
+/* --- Margin chips --- */
+
+.mn-chip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: auto;
+  cursor: pointer;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-accent);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-normal);
+}
+
+.mn-chip:hover {
+  border-color: var(--interactive-accent);
+}
+
+.mn-chip-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.mn-chip-text {
+  word-break: break-word;
+}
+
