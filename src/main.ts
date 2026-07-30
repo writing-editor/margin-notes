@@ -3,6 +3,8 @@ import { EditorView } from '@codemirror/view';
 import { DEFAULT_SETTINGS, MarginNotesSettings, MarginNotesSettingTab } from './settings';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { noteMarkerField, forceMarginRefresh } from './noteMarkers';
+import { linkMarkerField } from './linkMarkers';
+import { registerLinkPreviewInvalidation, disposeAllLinkPreviews } from './linkPreview';
 import { marginPanel, insertNoteAt } from './marginPanel';
 import { mnTypeAutocomplete } from './typeAutocomplete';
 import { runAgent } from './agentRunner';
@@ -19,15 +21,21 @@ function getCM6View(editor: Editor): EditorView | undefined {
 
 export default class MarginNotesPlugin extends Plugin {
   settings: MarginNotesSettings = DEFAULT_SETTINGS;
+  private linkPreviewInvalidation: { unregister: () => void } | null = null;
 
   async onload() {
     await this.loadSettings();
     runtime.app = this.app;
     runtime.settings = this.settings;
 
-    this.registerEditorExtension([noteMarkerField, marginPanel, mnTypeAutocomplete]);
+    this.registerEditorExtension([noteMarkerField, linkMarkerField, marginPanel, mnTypeAutocomplete]);
     this.addSettingTab(new MarginNotesSettingTab(this.app, this));
     this.applyMarginWidth();
+    // Module-level cache in linkPreview.ts is shared across every open
+    // editor's margin column, so this is registered once here rather than
+    // per-editor — parallel to the rename/metadataCache listeners below,
+    // which are also plugin-lifetime, not per-view.
+    this.linkPreviewInvalidation = registerLinkPreviewInvalidation(this.app);
 
     this.addCommand({
       id: 'insert-margin-note',
@@ -71,6 +79,8 @@ export default class MarginNotesPlugin extends Plugin {
 
   onunload() {
     // registerEditorExtension/registerEvent handle their own teardown.
+    this.linkPreviewInvalidation?.unregister();
+    disposeAllLinkPreviews();
   }
 
   async runAgentCommand(): Promise<void> {

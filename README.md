@@ -22,8 +22,11 @@ src/
   secureStorage.ts        — OS-keychain-backed secret storage (falls back to plaintext, honestly)
   paragraphs.ts           — the one shared "what is a paragraph" definition (ported from lib/paragraphs.js)
   noteMarkers.ts          — ported from noteWidgets.js: [mn: ...] → superscript widget
-  marginPanel.ts          — the literal margin column, chip positioning/editing, bulk agent insert
-  noteEditModal.ts        — insert/edit/delete note modal
+  linkMarkers.ts          — [[link]]/![[embed]] → plain clickable inline text
+  linkPreview.ts          — async resolve/read/render/cache for link & embed margin chips
+  marginLayout.ts         — shared two-pass anchor+clamp layout, generic across chip kinds
+  marginPanel.ts          — the literal margin column: builds note chips and link/embed chips, bulk agent insert
+  noteTypes.ts            — note-type registry (color/label) + link/embed chip accent colors
   agents.ts               — provider dispatch, paragraph-ID contract (ported from lib/ai-proxy.js)
   agentRunner.ts          — orchestrates one run across selection/file/vault scope
 ```
@@ -94,6 +97,49 @@ npm run build     # tsc typecheck + esbuild production bundle -> main.js
   OS keychain) when available, plaintext with an explicit on-screen note
   when it isn't (mobile, or a desktop with no keyring backend).
 
+## Links and embeds in the margin
+
+`[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, `[[Note#Heading|Alias]]`,
+and their `![[...]]` embed equivalents render inline as plain, unstyled
+clickable text (no brackets, no default blue link color) — same visual
+weight as surrounding prose. A margin chip appears next to that line with a
+live-rendered preview of the target note's content, using a distinct accent
+color for links vs. embeds so you can tell the two apart at a glance.
+
+- **`linkMarkers.ts`** parses the `[[...]]`/`![[...]]` syntax
+  (`target[#heading][|alias]` grammar) and decorates matches with a plain
+  `<span class="mn-linktext">` widget. Clicking it calls Obsidian's own
+  `app.workspace.openLinkText()` — the same link-click behavior Obsidian's
+  built-in renderer uses (handles aliases/headings/creating a missing note
+  the same way).
+- **`linkPreview.ts`** owns the async side: resolving the link target via
+  `app.metadataCache.getFirstLinkpathDest()`, reading its content with
+  `app.vault.cachedRead()`, and rendering it via `MarkdownRenderer.render()`
+  into a cache keyed by the resolved file's path (so multiple links to the
+  same note share one render). A broken link shows a distinct "note not
+  found" chip state instead of a blank or throwing chip. The cache
+  invalidates and live-updates open chips when the target file is modified
+  (`vault.on('modify')`), and everything is rendered through one shared,
+  plugin-lifetime `Component` so `MarkdownRenderer`'s own child renderers
+  are cleaned up correctly on unload rather than leaking per re-render.
+- **`marginLayout.ts`** is the shared positioning/clamping engine both note
+  chips and link/embed chips run through — a generic `MarginItem` interface
+  (`{ from, id, buildChip() }`) plus a two-pass "compute every anchor's true
+  position first, then place chips top-down clamping only when the *next*
+  item's real anchor demands it" layout. `marginPanel.ts` merges note
+  markers and link markers into one document-order list before handing it
+  to this pass, so a note and a link near each other on the page get
+  clamping decisions that correctly account for both as neighbors — not two
+  independently-computed layouts fighting over the same vertical space.
+- **Hover-zoom.** Every margin chip — note or link/embed, clamped or not —
+  scales up and lifts on `:hover` (pure CSS `transform` + `box-shadow`, no
+  JS involved in the motion itself), showing its full unclamped content.
+  It's pinned to the margin's own horizontal position
+  (`transform-origin: right center`, matching the track's right-aligned
+  layout) so a zoomed chip never grows toward or over the main text — only
+  leftward/vertically, within the reserved margin space. This has zero
+  effect on the editor's own cursor, selection, or focus.
+
 ## Known caveats (read before relying on this)
 
 - **`editor.cm` is not officially typed.** If a future Obsidian release
@@ -107,10 +153,13 @@ npm run build     # tsc typecheck + esbuild production bundle -> main.js
 
 ## Notes storage today
 
-Notes are stored literally, inline in the document body, as
-`[mn.type: content]` / `[mn: content]` markers that CodeMirror decorates
-into a superscript widget + margin chip. There's no separate file, link, or
-footnote involved yet — see the open discussion in this repo about a
-possible second, link-backed note mode for longer notes (particularly AI
-output), which is a bigger design change and deliberately not part of this
-split.
+`[mn.type: content]` / `[mn: content]` notes are stored literally, inline in
+the document body, decorated by CodeMirror into a superscript widget +
+margin chip — there's no separate file or footnote involved for these.
+
+`[[links]]` and `![[embeds]]` are the second, link-backed kind mentioned as
+a future direction in earlier drafts of this README — that direction has
+now shipped (see "Links and embeds in the margin" above). Unlike `mn` notes,
+these don't store any content themselves; the margin chip is a live preview
+of whatever the target note currently contains, fetched and cached by
+`linkPreview.ts`.

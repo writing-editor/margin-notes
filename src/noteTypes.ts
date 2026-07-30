@@ -40,3 +40,12 @@ export function noteTypeDef(type: string | null): NoteTypeDef {
 export function noteTypeColor(type: string | null): string {
   return noteTypeDef(type).color;
 }
+
+// Distinct accent colors for link/embed margin chips — these are NOT `mn.`
+// note types (no dot-suffix syntax, not user-selectable, nothing to
+// autocomplete), so they deliberately live outside the NOTE_TYPES registry
+// rather than being forced into that pattern. One color per link kind so a
+// user scanning the margin can tell at a glance which kind of chip they're
+// looking at, even though both show a content preview.
+export const LINK_CHIP_COLOR = '#0ea5e9';
+export const EMBED_CHIP_COLOR = '#f472b6';

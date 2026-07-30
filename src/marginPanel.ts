@@ -2,9 +2,10 @@ import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { editorInfoField } from 'obsidian';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { findNoteMarkers, forceMarginRefresh, NoteMarker } from './noteMarkers';
-import { noteTypeColor } from './noteTypes';
-
-const CHIP_GAP = 6;
+import { findLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
+import { getLinkPreview } from './linkPreview';
+import { noteTypeColor, LINK_CHIP_COLOR, EMBED_CHIP_COLOR } from './noteTypes';
+import { MarginItem, layoutMarginItems } from './marginLayout';
 
 // Exported so main.ts's insert-note command can splice a new marker into a
 // specific view without duplicating the [mn.type: content] formatting rule.
@@ -25,9 +26,37 @@ export function insertAiNotes(view: EditorView, placements: Array<{ charPos: num
   for (const p of sorted) insertNoteAt(view, p.charPos, 'ai', p.content);
 }
 
+/**
+ * Stable merge of two already-individually-sorted (by `.from`) MarginItem
+ * lists into one combined, still-sorted list. Used to combine note-marker
+ * items and link-marker items before handing them to layoutMarginItems(),
+ * which requires its input pre-sorted rather than sorting internally
+ * (different marker kinds may need this kind of merge rather than an
+ * independent full sort).
+ */
+function mergeByFrom(a: MarginItem[], b: MarginItem[]): MarginItem[] {
+  const out: MarginItem[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i].from <= b[j].from) out.push(a[i++]);
+    else out.push(b[j++]);
+  }
+  while (i < a.length) out.push(a[i++]);
+  while (j < b.length) out.push(b[j++]);
+  return out;
+}
+
 class MarginColumn {
   private readonly track: HTMLDivElement;
   private rafHandle: number | null = null;
+  // Tracks the current preview-update subscription per link marker id, so
+  // rebuilding the same marker's chip on a later render() pass can
+  // unsubscribe the previous chip's listener before registering the new
+  // one — otherwise every render pass (docChanged/selection/scroll can all
+  // trigger one) would leak one more listener into linkPreview.ts's cache
+  // entry forever. See buildLinkChip() for where this is read/written.
+  private readonly linkPreviewUnsubs = new Map<string, () => void>();
 
   constructor(private readonly view: EditorView) {
     this.track = document.createElement('div');
@@ -60,71 +89,116 @@ class MarginColumn {
     if (!enabled) return;
 
     const markers = findNoteMarkers(this.view.state.doc);
+    const linkMarkers = findLinkMarkers(this.view.state.doc);
 
-    // lineBlockAt(pos) is meant to return the visual (wrapped) row pos sits
-    // on, but that lookup only works within view.viewport — see CM6's own
-    // source: it does `viewportLines.find(...)` first, and only falls back
-    // to a coarser heightMap query outside the viewport. In practice, for
-    // margin notes on wrapped paragraphs, this produced a block anchored at
-    // the *paragraph's first visual row* rather than the specific wrapped
-    // row the marker's own character sits on — chips would land several
-    // lines too high, by a roughly-constant amount, matching exactly what
-    // was reported. coordsAtPos(pos) instead asks CM6 directly "where does
-    // this character render on screen right now", which is unambiguous
-    // regardless of wrapping, and empirically verified (via a live-editor
-    // diagnostic) to agree exactly with the anchor DOM element's own
-    // getBoundingClientRect(). It returns viewport-relative screen
-    // coordinates, so converting into the track's own coordinate space
-    // needs one subtraction: the scroller's screen position.
-    const scrollerTop = this.view.scrollDOM.getBoundingClientRect().top;
-    const scrollTop = this.view.scrollDOM.scrollTop;
+    // Map both marker kinds into the generic MarginItem shape the shared
+    // layout pass operates over (marginLayout.ts), then merge-sort by
+    // document position — layoutMarginItems() requires its input already
+    // sorted by `.from` ascending, and note/link markers are each already
+    // individually sorted (both scanners walk the doc left to right), so a
+    // stable merge is all that's needed rather than a full re-sort.
+    const noteItems: MarginItem[] = markers.map((marker) => ({
+      from: marker.from,
+      id: `mn:${marker.id}`,
+      buildChip: () => this.buildChip(marker),
+    }));
+    const linkItems: MarginItem[] = linkMarkers.map((marker) => ({
+      from: marker.from,
+      id: marker.id,
+      buildChip: () => this.buildLinkChip(marker),
+    }));
+    const items = mergeByFrom(noteItems, linkItems);
 
-    // Pass 1: each marker's true, un-clamped anchor position — i.e. where
-    // it would sit if nothing were crowding it. Computed for every marker
-    // up front so pass 2 can look ahead at "where does the NEXT note want
-    // to be" to decide how much room is genuinely available for this one,
-    // rather than only knowing "where did the previous chip actually end up
-    // after clamping" (which would compound clamping decisions instead of
-    // basing each one on the real, independent anchor below it).
-    const anchorTops = markers.map((marker) => {
-      const coords = this.view.coordsAtPos(marker.from);
-      // coordsAtPos can return null for a position that's been scrolled
-      // fully out of the rendered viewport (CM6 only measures what's
-      // drawn). Falling back to lineBlockAt here is deliberately the
-      // *rarer* path now, only hit for genuinely off-screen markers, not
-      // the common case that broke before.
-      return coords ? coords.top - scrollerTop + scrollTop : this.view.lineBlockAt(marker.from).top;
+    layoutMarginItems(this.view, this.track, items);
+  }
+
+  private buildLinkChip(marker: LinkMarker): HTMLDivElement {
+    const chip = document.createElement('div');
+    chip.className = 'mn-chip mn-chip-link';
+    chip.style.borderLeftColor = marker.isEmbed ? EMBED_CHIP_COLOR : LINK_CHIP_COLOR;
+    chip.dataset.linkId = marker.id;
+
+    const label = document.createElement('span');
+    label.className = 'mn-chip-label';
+    label.textContent = marker.isEmbed ? 'embed' : 'link';
+    chip.appendChild(label);
+
+    // Placeholder content shown synchronously while the async preview
+    // fetch (linkPreview.ts) is in flight — just the bare title, per §2.2's
+    // "must render in the correct position immediately... with a
+    // lightweight loading state" requirement. Kept in its own wrapper span
+    // (not reusing the plain .mn-chip-text the note chips use) so the
+    // preview-swap logic below has one clearly-scoped element to replace
+    // the *contents* of, without touching the label span next to it.
+    const body = document.createElement('span');
+    body.className = 'mn-chip-link-body';
+    body.textContent = linkDisplayText(marker);
+    chip.appendChild(body);
+
+    const info = this.view.state.field(editorInfoField, false);
+    const sourcePath = info?.file?.path ?? '';
+    const app = runtime.app;
+
+    if (app) {
+      const applyState = () => {
+        const { state } = getLinkPreview(app, marker, sourcePath, applyState);
+        if (state.status === 'ready') {
+          body.replaceChildren(state.el);
+          chip.classList.add('mn-chip-link-loaded');
+          chip.classList.remove('mn-chip-link-missing');
+        } else if (state.status === 'missing') {
+          body.textContent = `No note titled "${state.linkpath}" yet`;
+          chip.classList.add('mn-chip-link-missing');
+        } else if (state.status === 'error') {
+          body.textContent = linkDisplayText(marker);
+          chip.classList.add('mn-chip-link-missing');
+        }
+        // 'pending' keeps showing the bare-title placeholder already set
+        // above — nothing further to do for that state.
+      };
+      // First call both reads the current (possibly cached, possibly
+      // freshly-kicked-off) state AND subscribes this chip's applyState as
+      // the listener that fires again when the async fetch resolves later
+      // — a single call handles both the synchronous initial paint and the
+      // async swap-in-place, since getLinkPreview() always registers
+      // onUpdate regardless of whether it returns 'pending' or a settled
+      // state immediately.
+      const { unsubscribe } = getLinkPreview(app, marker, sourcePath, applyState);
+      applyState();
+      // IMPORTANT: this chip's own DOM node is discarded and rebuilt from
+      // scratch on every render() pass (this.track.replaceChildren() at the
+      // top of render()) — there is currently no explicit teardown hook run
+      // per-chip when that happens. Attaching unsubscribe here means once
+      // this specific chip element is garbage-collected (no more DOM
+      // references, no more closures holding it) the listener technically
+      // still lives in the cache entry's `listeners` Set until something
+      // removes it. To keep this bounded rather than accumulating forever
+      // across many render passes, remove the immediately-previous
+      // subscription for the same marker id proactively: getLinkPreview
+      // dedupes by Set identity, so the simplest safe fix is to unsubscribe
+      // this listener the next time THIS SAME marker's chip is rebuilt.
+      // We track that via a WeakMap-free approach: store the unsubscribe
+      // function on the track's dataset-adjacent map keyed by marker.id,
+      // and call the previous one (if any) before registering this one.
+      const prevUnsub = this.linkPreviewUnsubs.get(marker.id);
+      if (prevUnsub) prevUnsub();
+      this.linkPreviewUnsubs.set(marker.id, unsubscribe);
+    }
+
+    // Clicking a link/embed chip navigates to that note — same action as
+    // clicking the inline text (linkMarkers.ts's LinkInlineWidget). This is
+    // NOT "select text in the document" the way mn chip clicks are
+    // (focusNoteText below is specific to mn markers' edit-in-place model;
+    // link/embed chips have no inline note body to select, since their
+    // inline text IS the link itself).
+    chip.addEventListener('mousedown', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (!app) return;
+      app.workspace.openLinkText(marker.linkpath, sourcePath);
     });
 
-    // Pass 2: place chips top-down, clamping a chip's height only when its
-    // natural full-content height would otherwise push past where the next
-    // note's own anchor sits — an isolated note with room to spare is never
-    // clamped. Clicking still always works the same regardless of clamping
-    // (it re-locates the marker in the raw document); clamping only affects
-    // how much is shown before you hover/click, never what the note IS.
-    let lastBottom = -Infinity;
-    for (let i = 0; i < markers.length; i++) {
-      const marker = markers[i];
-      const chip = this.buildChip(marker);
-      let top = anchorTops[i];
-      if (top < lastBottom + CHIP_GAP) top = lastBottom + CHIP_GAP;
-      chip.style.top = `${top}px`;
-
-      const nextTop = i + 1 < markers.length ? anchorTops[i + 1] : Infinity;
-      const availableHeight = nextTop - top - CHIP_GAP;
-      // Measure natural height by appending unclamped first — max-height
-      // starts at "none" via the CSS default, so this read is accurate.
-      this.track.appendChild(chip);
-      const naturalHeight = chip.offsetHeight;
-      if (Number.isFinite(availableHeight) && naturalHeight > availableHeight) {
-        const clamped = Math.max(availableHeight, 20); // never clamp below ~one line + padding
-        chip.style.setProperty('--mn-chip-max-height', `${clamped}px`);
-        chip.classList.add('mn-chip-clamped');
-        lastBottom = top + clamped;
-      } else {
-        lastBottom = top + naturalHeight;
-      }
-    }
+    return chip;
   }
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
@@ -173,6 +247,8 @@ class MarginColumn {
   }
 
   destroy() {
+    for (const unsub of this.linkPreviewUnsubs.values()) unsub();
+    this.linkPreviewUnsubs.clear();
     this.track.remove();
     this.view.scrollDOM.classList.remove('mn-has-margin');
   }

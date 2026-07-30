@@ -19,6 +19,10 @@
   right: 8px;
   width: calc(var(--mn-margin-width, 220px) - 16px);
   pointer-events: none;
+  /* Explicit (was implicit/default before): a hovered chip legitimately
+     needs to render outside the track's own box when scaled up by the
+     hover-zoom rule below — this must never clip that. */
+  overflow: visible;
 }
 
 /* --- Inline note anchors (superscript markers in the running text) --- */
@@ -31,6 +35,23 @@
   /* colour set inline per-note from noteTypes.ts */
   font-weight: 600;
   padding: 0 1px;
+}
+
+/* --- Inline link/embed text (plain-prose rendering of [[...]]/![[...]]) --- */
+/* Deliberately NOT styled like Obsidian's default internal links (no accent
+   color, no underline) — reads as normal prose. Still clickable (see
+   linkMarkers.ts's mousedown handler), with only a very subtle hover cue so
+   it's discoverable without visually shouting "I am a link". Kept as its
+   own class rather than reusing .mn-anchor/.mn-marker, which are for `mn:`
+   note superscripts and stay visually/semantically distinct from this. */
+.mn-linktext {
+  color: inherit;
+  cursor: pointer;
+}
+
+.mn-linktext:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
 }
 
 /* --- Margin chips --- */
@@ -56,29 +77,42 @@
      never chips further down. */
   max-height: var(--mn-chip-max-height, none);
   overflow: hidden;
+  /* Unified hover-zoom base (see .mn-chip:hover below, which replaces the
+     old clamped-only hover rule from Gotcha #4). transform-origin: right
+     center is deliberate: chips are right-aligned in the margin track
+     (.mn-margin-track has right: 8px), so scaling from the right edge grows
+     the chip leftward/vertically only — never toward .cm-content. */
+  transform-origin: right center;
+  transform: scale(1);
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out, max-height 120ms ease-out;
 }
 
 /* Only applied (via JS adding this class) when max-height actually clamps
    the chip's natural content — an unclamped chip gets no fade, since there's
-   nothing hidden to hint at. */
+   nothing hidden to hint at. This mask only governs the resting (non-hover)
+   state; hover clears it below. */
 .mn-chip.mn-chip-clamped {
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent 100%);
 }
 
+/* Unified hover-zoom — applies to EVERY chip, clamped or not. This
+   supersedes and REPLACES the old .mn-chip.mn-chip-clamped:hover rule
+   (Gotcha #4): that rule only fired for clamped chips and left unclamped
+   chips with no hover treatment at all. Now every chip gets the same
+   "lift off the stack" motion, whether or not it had anything clamped to
+   reveal.
+   Pure CSS :hover + transform — no JS mouseenter/mouseleave listeners are
+   needed for this visual, and it has zero effect on the editor's own
+   cursor/selection/focus (marginPanel.ts's mousedown handler is separate
+   and only fires on an actual click). */
 .mn-chip:hover {
-  border-color: var(--interactive-accent);
-}
-
-/* Hover expands a clamped chip to its full natural height without shifting
-   layout of the chips around it — z-index lift + shadow makes clear it's
-   floating over, not making room. Only clamped chips need this; a chip
-   that was never clamped has nothing to expand into. */
-.mn-chip.mn-chip-clamped:hover {
+  transform: scale(1.12);
   max-height: none;
   overflow: visible;
   mask-image: none;
-  z-index: 10;
-  box-shadow: 0 2px 8px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.25));
+  border-color: transparent;
+  box-shadow: 0 8px 24px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.3));
+  z-index: 20;
 }
 
 .mn-chip-label {
@@ -89,4 +123,43 @@
 
 .mn-chip-text {
   word-break: break-word;
+}
+
+/* --- Link/embed preview chip body (linkPreview.ts's rendered content) --- */
+
+.mn-chip-link-body {
+  display: block;
+  word-break: break-word;
+}
+
+/* Rendered markdown preview content inherits chip font-size/line-height by
+   default; keep it from ballooning if the target note's own styles set
+   larger headings etc. — this is a small margin chip, not a full pane. */
+.mn-chip-link-body :is(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+  font-weight: 600;
+  margin: 0 0 2px 0;
+}
+
+.mn-chip-link-body p {
+  margin: 0 0 4px 0;
+}
+
+/* Subtle pulse while the async fetch-resolve-render (linkPreview.ts) is in
+   flight — chip already shows the bare title synchronously (see
+   buildLinkChip), this is just a "still loading" affordance layered on. */
+.mn-chip-link:not(.mn-chip-link-loaded):not(.mn-chip-link-missing) .mn-chip-link-body {
+  opacity: 0.6;
+}
+
+/* Broken-link / render-error state (Gotcha #5): muted, dashed border,
+   distinct from a normal chip so it never silently looks like a working
+   preview. */
+.mn-chip-link.mn-chip-link-missing {
+  border-left-style: dashed;
+}
+
+.mn-chip-link.mn-chip-link-missing .mn-chip-link-body {
+  color: var(--text-muted);
+  font-style: italic;
 }
