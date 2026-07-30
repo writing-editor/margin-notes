@@ -49,10 +49,36 @@
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-normal);
+  /* Set per-chip from marginPanel.ts to the room actually available before
+     the next chip's anchor — "none" when there's no crowding, so an
+     isolated chip is never clamped. Chips are laid out top-down in document
+     order, so "room available" only ever needs to look at the next chip,
+     never chips further down. */
+  max-height: var(--mn-chip-max-height, none);
+  overflow: hidden;
+}
+
+/* Only applied (via JS adding this class) when max-height actually clamps
+   the chip's natural content — an unclamped chip gets no fade, since there's
+   nothing hidden to hint at. */
+.mn-chip.mn-chip-clamped {
+  mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent 100%);
 }
 
 .mn-chip:hover {
   border-color: var(--interactive-accent);
+}
+
+/* Hover expands a clamped chip to its full natural height without shifting
+   layout of the chips around it — z-index lift + shadow makes clear it's
+   floating over, not making room. Only clamped chips need this; a chip
+   that was never clamped has nothing to expand into. */
+.mn-chip.mn-chip-clamped:hover {
+  max-height: none;
+  overflow: visible;
+  mask-image: none;
+  z-index: 10;
+  box-shadow: 0 2px 8px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.25));
 }
 
 .mn-chip-label {
@@ -64,4 +90,3 @@
 .mn-chip-text {
   word-break: break-word;
 }
-

@@ -60,24 +60,70 @@ class MarginColumn {
     if (!enabled) return;
 
     const markers = findNoteMarkers(this.view.state.doc);
-    let lastBottom = -Infinity;
 
-    for (const marker of markers) {
+    // lineBlockAt(pos) is meant to return the visual (wrapped) row pos sits
+    // on, but that lookup only works within view.viewport — see CM6's own
+    // source: it does `viewportLines.find(...)` first, and only falls back
+    // to a coarser heightMap query outside the viewport. In practice, for
+    // margin notes on wrapped paragraphs, this produced a block anchored at
+    // the *paragraph's first visual row* rather than the specific wrapped
+    // row the marker's own character sits on — chips would land several
+    // lines too high, by a roughly-constant amount, matching exactly what
+    // was reported. coordsAtPos(pos) instead asks CM6 directly "where does
+    // this character render on screen right now", which is unambiguous
+    // regardless of wrapping, and empirically verified (via a live-editor
+    // diagnostic) to agree exactly with the anchor DOM element's own
+    // getBoundingClientRect(). It returns viewport-relative screen
+    // coordinates, so converting into the track's own coordinate space
+    // needs one subtraction: the scroller's screen position.
+    const scrollerTop = this.view.scrollDOM.getBoundingClientRect().top;
+    const scrollTop = this.view.scrollDOM.scrollTop;
+
+    // Pass 1: each marker's true, un-clamped anchor position — i.e. where
+    // it would sit if nothing were crowding it. Computed for every marker
+    // up front so pass 2 can look ahead at "where does the NEXT note want
+    // to be" to decide how much room is genuinely available for this one,
+    // rather than only knowing "where did the previous chip actually end up
+    // after clamping" (which would compound clamping decisions instead of
+    // basing each one on the real, independent anchor below it).
+    const anchorTops = markers.map((marker) => {
+      const coords = this.view.coordsAtPos(marker.from);
+      // coordsAtPos can return null for a position that's been scrolled
+      // fully out of the rendered viewport (CM6 only measures what's
+      // drawn). Falling back to lineBlockAt here is deliberately the
+      // *rarer* path now, only hit for genuinely off-screen markers, not
+      // the common case that broke before.
+      return coords ? coords.top - scrollerTop + scrollTop : this.view.lineBlockAt(marker.from).top;
+    });
+
+    // Pass 2: place chips top-down, clamping a chip's height only when its
+    // natural full-content height would otherwise push past where the next
+    // note's own anchor sits — an isolated note with room to spare is never
+    // clamped. Clicking still always works the same regardless of clamping
+    // (it re-locates the marker in the raw document); clamping only affects
+    // how much is shown before you hover/click, never what the note IS.
+    let lastBottom = -Infinity;
+    for (let i = 0; i < markers.length; i++) {
+      const marker = markers[i];
       const chip = this.buildChip(marker);
-      // Align to the marker's OWN line, not the top of its paragraph. For
-      // an AI note the marker sits at the paragraph's first character
-      // anyway (see agents.ts), so this is identical to before for those.
-      // For a note typed inline mid-paragraph, marker.from IS the exact,
-      // already-known position the person placed it at — snapping instead
-      // to the paragraph's top line (the old behaviour) is what produced
-      // the one-or-two-line offset. The marker's own position needs no
-      // lookup or guessing; just read the line it's actually on.
-      const block = this.view.lineBlockAt(marker.from);
-      let top = block.top;
+      let top = anchorTops[i];
       if (top < lastBottom + CHIP_GAP) top = lastBottom + CHIP_GAP;
       chip.style.top = `${top}px`;
+
+      const nextTop = i + 1 < markers.length ? anchorTops[i + 1] : Infinity;
+      const availableHeight = nextTop - top - CHIP_GAP;
+      // Measure natural height by appending unclamped first — max-height
+      // starts at "none" via the CSS default, so this read is accurate.
       this.track.appendChild(chip);
-      lastBottom = top + chip.offsetHeight;
+      const naturalHeight = chip.offsetHeight;
+      if (Number.isFinite(availableHeight) && naturalHeight > availableHeight) {
+        const clamped = Math.max(availableHeight, 20); // never clamp below ~one line + padding
+        chip.style.setProperty('--mn-chip-max-height', `${clamped}px`);
+        chip.classList.add('mn-chip-clamped');
+        lastBottom = top + clamped;
+      } else {
+        lastBottom = top + naturalHeight;
+      }
     }
   }
 
