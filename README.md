@@ -249,3 +249,141 @@ store any content themselves; the margin chip is a live preview of
 whatever the target note currently contains, fetched and cached by
 `linkPreview.ts`. `![[embeds]]` are intentionally not part of this — see
 above for why.
+
+## A possible future direction: richer link-opening
+
+Margin-chip clicks currently open the link's target in a single reused
+split to the right of the pane (`marginPanel.ts`'s `openInCompanionSplit`)
+— clicking several different chips swaps that one companion pane's
+content rather than piling up new splits. This is deliberately kept
+simple for now rather than adding more click modes, but Obsidian's public
+API does support a couple of things worth considering later if there's a
+real need:
+
+- `app.workspace.openPopoutLeaf()` — opens the target in a genuinely
+  separate OS-level window (desktop only), closer to a detached
+  browser-tab feel than an in-window split.
+- Wiring the chip into Obsidian's own native hover-preview popover (the
+  same transient floating preview a normal `[[link]]` already gets on
+  hover), as a no-click "peek" option.
+
+Not implemented — noted here in case it's worth revisiting, but the
+current single-reused-split behavior covers the common case without
+adding another setting or click-mode for people to learn.
+
+## A possible future direction: more/different agent types
+
+The agent system today ships two bundled profiles (continuity checker,
+line editor) and lets anyone drop a markdown file into a configured
+folder to define more, using the same paragraph-anchored placement
+pipeline (`agents.ts`) regardless of what the profile actually asks the
+model to look for. That same pipeline could support quite different
+kinds of agents without new core mechanics, e.g.:
+
+- **A style/voice-consistency agent** — flags places where narration
+  voice, tense, or POV shifts unintentionally partway through a
+  document.
+- **A worldbuilding/continuity cross-reference agent** built on top of
+  the linked-note capability — reads a project's linked "bible" notes
+  ([[links]]) alongside the main text and flags where the prose
+  contradicts something already established in one of those notes,
+  rather than only checking the document against itself.
+- **A vault-context agent** that reads related linked notes as extra
+  context before annotating, rather than seeing only the one file/
+  selection currently being run against.
+- **A read-aloud/pacing agent** that flags paragraphs likely to read
+  awkwardly out loud (sentence length/rhythm heuristics plus a model
+  pass), useful for material meant to be performed or narrated.
+
+None of these need new placement/anchoring mechanics beyond what's
+already planned — they're new prompt profiles plus, in the
+vault-context case, feeding the model more than just the current file's
+own text. Not implemented; listed here as directions worth exploring
+once the core agent-output work (multi-note-per-paragraph, precise
+anchoring, linked report notes) is in place.
+
+## A possible future direction: one-click apply for AI suggestions
+
+Right now every `[mn.ai: ...]` note is pure commentary — the plugin's
+insert-only guarantee means an agent run never touches your actual prose,
+only adds a note alongside it. A natural next step some people will want
+is a small affordance on an AI note — e.g. two circular arrows/a sync
+icon — that, on click, applies the AI's suggested rewrite directly into
+the document and removes the note, rather than leaving you to read the
+suggestion and edit it in by hand.
+
+This is intentionally **not** planned or scheduled — it changes a real
+safety property (agent runs are currently guaranteed non-destructive to
+your prose) into something that can rewrite your document on a click, and
+that needs to be earned with real precision, not bolted onto the existing
+note type. If this is ever built, it likely needs, roughly in order:
+
+- **A genuinely new note kind**, not an extra button on `mn.ai` — so the
+  "this note can rewrite your text" property is visible and distinct
+  from an ordinary annotation, both in the markup and to the person
+  reading it.
+- **Exact-span anchoring**, not paragraph-level anchoring — the model
+  needs to identify a precise, verbatim substring to replace, not just
+  "this paragraph has an issue." Paragraph-level placement (today's
+  approach, and the improved-but-still-paragraph-scoped anchoring
+  planned for regular AI notes) isn't precise enough to safely apply an
+  edit automatically — a wrong or ambiguous match risks silently
+  rewriting the wrong text.
+- **A confirm-before-write UX**, most likely a diff-style preview (show
+  exactly what will change) rather than a single click committing an
+  edit with no preview at all.
+- **Acceptance that smaller/local models will struggle here** — proposing
+  a reliable verbatim replacement span is a harder task than proposing a
+  paragraph-scoped comment, and the failure modes are worse (a missed
+  match fails safely and does nothing; a wrong match silently edits the
+  wrong spot) — so this feature's quality will likely track model choice
+  much more closely than today's note-placement agents do.
+
+A safer intermediate step, if this direction is pursued at all: let an AI
+note *propose* a specific rewrite as part of its (still just) commentary,
+so a person can read and manually apply it — automating the "click to
+apply" step only once that proposal mechanism has proven reliable in
+practice.
+
+## A possible future direction: linking one `mn:` note to another
+
+`[[links]]` connect a note to a whole other *file*; there's currently no
+way to link one `[mn: ...]` note to another `[mn: ...]` note living
+elsewhere in the **same** file — useful when one underlying issue is
+mentioned in several places in the same document ("this contradicts what
+was said near the note on this same topic three pages up") and you'd
+rather cross-reference the earlier note than repeat it.
+
+This is a genuinely different problem from file-based links: an `mn:`
+note has no stable identity today beyond its live character offset,
+which shifts constantly as the document is edited elsewhere — so it
+can't be resolved the way `getFirstLinkpathDest` resolves a file. Two
+possible approaches, in order of how safe they'd be to build:
+
+- **Explicit, user-assigned anchor ids** — something like
+  `[mn#continuity1: ...]` to name a note, and a way to reference that id
+  from elsewhere (a new small syntax, or a variant of the existing link
+  syntax) to jump to it. Safer: the reference stays valid regardless of
+  what else changes in the document, the same way `[[Note#Heading]]`
+  already asks a person to name the heading explicitly rather than
+  guessing its position.
+- **Implicit positional ids** ("the 3rd note in this file") — cheaper to
+  write, but fragile: deleting or reordering an earlier note would
+  silently break every later reference to it, which is exactly the kind
+  of silent-corruption risk called out above for one-click-apply.
+
+The click behavior itself would likely scroll the same editor pane to
+the target note (not open a split — this is same-file navigation) and
+give the target note's chip a small "back" affordance to return to where
+you clicked from, ideally as a short stack rather than a single fixed
+origin, so following a chain of two or three references can retrace its
+steps.
+
+Automatically detecting that two notes are *about the same thing*
+(rather than requiring an explicit reference) would need either
+unreliable text-matching heuristics or a model-assisted pass — the
+latter is really an agent capability, and would want to build on
+whatever anchoring work the agent roadmap already produces, rather than
+being invented separately. Not implemented; scoped to same-file
+cross-references only — a cross-file version of this idea is really
+"you want a linked note," which `[[links]]` already provide.

@@ -55,6 +55,20 @@ export interface LinkMarker {
  * alias from everything before it, "#" always separates heading from the
  * target name that precedes it, and can appear before or absent from the
  * alias split.)
+ *
+ * Handles a BACKSLASH-ESCAPED pipe ("\|") the same as a bare "|": Markdown
+ * requires escaping a literal "|" inside a table cell (e.g. writing
+ * `[[Note\|Alias]]` in a doc's own markdown table so the pipe isn't read as
+ * a column separator), so a trailing "\" directly before the split point is
+ * stripped rather than left dangling on the end of linkpath/heading. Without
+ * this, a link written as `[[Character Bible\|Alice]]` (exactly the form
+ * this plugin's own user guide uses inside its syntax-reference table)
+ * resolved to a linkpath of "Character Bible\" — trailing backslash
+ * included — which never matches the real file "Character Bible.md", so the
+ * chip incorrectly reported the note as missing even though it exists and
+ * every other (non-escaped, non-table) link to it resolves fine. This is a
+ * table-escaping artifact, not a real character in the note name, so it
+ * should never survive into the resolved linkpath/heading.
  */
 function parseLinkInner(inner: string): { linkpath: string; heading: string | null; alias: string | null } {
   let rest = inner;
@@ -62,7 +76,10 @@ function parseLinkInner(inner: string): { linkpath: string; heading: string | nu
   const pipeIdx = rest.indexOf('|');
   if (pipeIdx !== -1) {
     alias = rest.slice(pipeIdx + 1).trim();
-    rest = rest.slice(0, pipeIdx);
+    // Strip a trailing "\" left over from an escaped "\|" split — see the
+    // function comment above. Plain "|" (no preceding backslash) is
+    // unaffected: replace() only touches a "\" that's actually there.
+    rest = rest.slice(0, pipeIdx).replace(/\\$/, '');
   }
   let heading: string | null = null;
   const hashIdx = rest.indexOf('#');
