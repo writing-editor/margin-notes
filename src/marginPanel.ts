@@ -1,6 +1,6 @@
 import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { editorInfoField, Platform, Modal, Notice } from 'obsidian';
-import type { App, Component, TFile } from 'obsidian';
+import type { App, Component, TFile, WorkspaceLeaf } from 'obsidian';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { findNoteMarkers, forceMarginRefresh, NoteMarker } from './noteMarkers';
 import { findTopLevelLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
@@ -155,6 +155,14 @@ class MarginColumn {
   // reschedule loop (each reschedule would otherwise rebuild the chip,
   // synchronously find the same warm cache, and reschedule again forever).
   private readonly linkChipLayoutContent = new Map<string, string>();
+  // The right-side split leaf this column has already opened a chip's
+  // target into, if any — reused on subsequent chip clicks (from THIS
+  // originating pane) instead of piling up a fresh split every time. Not
+  // guaranteed to still be open: the user can close that pane manually at
+  // any point after we stash the reference, so every read of this field
+  // must re-validate it against the workspace's current leaves first (see
+  // openInCompanionSplit()) rather than trusting the reference alone.
+  private companionLeaf: WorkspaceLeaf | null = null;
 
   constructor(private readonly view: EditorView) {
     this.track = document.createElement('div');
@@ -468,17 +476,25 @@ class MarginColumn {
       this.linkPreviewUnsubs.set(marker.id, unsubscribe);
     }
 
-    // Clicking a link chip navigates to that note — same action as
-    // clicking the inline text (linkMarkers.ts's LinkInlineWidget). This is
-    // NOT "select text in the document" the way mn chip clicks are
-    // (focusNoteText below is specific to mn markers' edit-in-place model;
-    // link chips have no inline note body to select, since their inline
-    // text IS the link itself).
+    // Clicking a link chip navigates to that note — but unlike clicking the
+    // inline text (linkMarkers.ts's LinkInlineWidget, which still opens on
+    // the active leaf exactly as Obsidian's own link clicks do), the chip
+    // opens the target in a split to the right instead of replacing the
+    // current note. That's the whole point of a margin chip: it's meant to
+    // be glanced at without losing your place in the document you're
+    // annotating, so navigating away from it in-place would defeat that.
+    // See openInCompanionSplit() for why this reuses one split per
+    // originating pane rather than creating a fresh one on every click.
+    //
+    // No extra call is needed to re-trigger the narrow-pane margin-collapse
+    // check: MarginColumn's own ResizeObserver (see its constructor) is
+    // already watching this pane's scrollDOM, so the moment the split
+    // actually shrinks this pane below the threshold, render() reruns and
+    // hides the chip column on its own.
     chip.addEventListener('mousedown', (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      if (!app) return;
-      app.workspace.openLinkText(marker.linkpath, sourcePath);
+      void this.openInCompanionSplit(marker.linkpath, sourcePath);
     });
 
     // Deleting a link chip is a bigger deal than deleting an mn note: it
@@ -492,6 +508,55 @@ class MarginColumn {
     chip.appendChild(buildDeleteButton(() => this.confirmDeleteLinkedFile(marker, sourcePath)));
 
     return chip;
+  }
+
+  /**
+   * Opens `linkpath` in a split to the right of this margin column's own
+   * pane, reusing the SAME split across repeated chip clicks (from this
+   * pane) rather than piling up a new one every time — clicking three
+   * different chips in a row should swap the one companion pane's content
+   * three times, not leave three new panes open.
+   *
+   * The obvious-looking alternative — call
+   * `app.workspace.openLinkText(linkpath, sourcePath, 'split')` every time
+   * — was rejected specifically because 'split' always creates a brand new
+   * leaf; it has no "but reuse the one I already made" mode.
+   *
+   * Approach: keep a reference to the leaf we created last time
+   * (this.companionLeaf). A stored leaf reference can go stale at any
+   * point — the user is always free to close that pane by hand — so it's
+   * revalidated against the workspace's CURRENT leaves on every call
+   * rather than trusted blindly; WorkspaceLeaf has no public
+   * "amIStillOpen" flag, so membership in iterateAllLeaves()'s output is
+   * the standard, documented-behavior-only way to tell. If it's gone, a
+   * fresh split is created and stashed as the new companion.
+   *
+   * Once we have a live leaf to reuse, setActiveLeaf() makes it Obsidian's
+   * notion of "the currently active/navigable leaf", then
+   * openLinkText(..., false) targets exactly that leaf — 'false' being the
+   * "use the active leaf" mode. Routing back through openLinkText (rather
+   * than resolving the file ourselves and calling leaf.openFile()) is
+   * deliberate: it's what keeps alias/heading targets and the "create this
+   * note?" prompt for unresolved links working exactly as they already do
+   * elsewhere in this plugin — only which leaf receives the result
+   * changes, not how the link itself gets resolved.
+   */
+  private async openInCompanionSplit(linkpath: string, sourcePath: string) {
+    const app = runtime.app;
+    if (!app) return;
+
+    // Checked across ALL leaves, not just getLeavesOfType('markdown') —
+    // the companion pane could currently be showing a non-markdown file
+    // (an image, PDF, canvas, etc., if a previous chip's target wasn't a
+    // note) and would still count as "still open" for reuse purposes.
+    const liveLeaves: WorkspaceLeaf[] = [];
+    app.workspace.iterateAllLeaves((l) => liveLeaves.push(l));
+    const stillOpen = this.companionLeaf && liveLeaves.includes(this.companionLeaf);
+    const leaf = stillOpen ? this.companionLeaf! : app.workspace.getLeaf('split', 'vertical');
+    this.companionLeaf = leaf;
+
+    app.workspace.setActiveLeaf(leaf, { focus: true });
+    await app.workspace.openLinkText(linkpath, sourcePath, false);
   }
 
   private confirmDeleteLinkedFile(marker: LinkMarker, sourcePath: string) {

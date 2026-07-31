@@ -119,10 +119,35 @@ class NoteAnchorWidget extends WidgetType {
     sup.style.color = noteTypeColor(this.type);
     sup.textContent = String(this.id);
     span.appendChild(sup);
+    // Tapping/clicking the superscript itself reveals the note's own raw
+    // `[mn.type: content]` text right where it already lives in the
+    // document, with the caret placed at the START of the content — NOT a
+    // popup/popover. This is the ONLY way to reach an mn note's content at
+    // all on a narrow pane or mobile, where marginPanel.ts's chip column is
+    // suppressed entirely (see its narrow-pane gate) and so never renders
+    // for this note to click on instead. On a wide desktop pane this is a
+    // second path to the same place the margin chip's own click already
+    // reaches (see MarginColumn.focusNoteText) — deliberately not shared
+    // code with that method, since the two intentionally select
+    // differently (this one collapses the caret to the start of the
+    // content for reading/positioning; the chip's click selects the whole
+    // content for one-motion replacement).
+    span.addEventListener('mousedown', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const view = EditorView.findFromDOM(span);
+      if (!view) return;
+      const current = findNoteMarkers(view.state.doc).find((m) => m.id === this.id);
+      if (!current) return;
+      const innerEnd = current.to - 1; // just before ']'
+      const innerStart = innerEnd - current.content.length;
+      view.dispatch({ selection: { anchor: innerStart }, scrollIntoView: true });
+      view.focus();
+    });
     return span;
   }
   ignoreEvent() {
-    return false; // let clicks through so the margin panel can react
+    return false; // let the mousedown listener above handle it
   }
 }
 
