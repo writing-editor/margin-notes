@@ -99,6 +99,10 @@ npm run build     # tsc typecheck + esbuild production bundle -> main.js
 
 ## Links and embeds in the margin
 
+> **For usage instructions, see
+> [`docs/links-and-hover-zoom-user-guide.md`](docs/links-and-hover-zoom-user-guide.md).**
+> The rest of this section is implementation notes for developers.
+
 `[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, `[[Note#Heading|Alias]]`,
 and their `![[...]]` embed equivalents render inline as plain, unstyled
 clickable text (no brackets, no default blue link color) — same visual

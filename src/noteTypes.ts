@@ -41,11 +41,10 @@ export function noteTypeColor(type: string | null): string {
   return noteTypeDef(type).color;
 }
 
-// Distinct accent colors for link/embed margin chips — these are NOT `mn.`
+// Distinct accent color for link margin chips — [[links]] are NOT `mn.`
 // note types (no dot-suffix syntax, not user-selectable, nothing to
-// autocomplete), so they deliberately live outside the NOTE_TYPES registry
-// rather than being forced into that pattern. One color per link kind so a
-// user scanning the margin can tell at a glance which kind of chip they're
-// looking at, even though both show a content preview.
+// autocomplete), so this deliberately lives outside the NOTE_TYPES registry
+// rather than being forced into that pattern. (There used to be a second
+// EMBED_CHIP_COLOR for ![[embeds]] here — removed when embed handling was
+// dropped entirely; see linkMarkers.ts's top-of-file comment for why.)
 export const LINK_CHIP_COLOR = '#0ea5e9';
-export const EMBED_CHIP_COLOR = '#f472b6';

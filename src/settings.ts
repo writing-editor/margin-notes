@@ -29,6 +29,26 @@ export interface MarginNotesSettings {
   frontmatterKey: string;
   folderPath: string;
   marginWidth: number;
+  /**
+   * Below this editor-pane width (in pixels), the margin chip column hides
+   * itself entirely — the pane is too narrow to reserve marginWidth px for
+   * chips without squeezing the actual prose uncomfortably. This is the
+   * PANE's width, not the window's — opening two notes side-by-side (a
+   * split view) makes each pane narrower without changing the window, and
+   * this setting is what catches that case. Note-superscript numbers and
+   * underlined link text keep rendering as normal — only the chip column
+   * itself hides. 0 disables this check entirely (chips always show,
+   * however narrow the pane gets).
+   */
+  narrowPaneThreshold: number;
+  /**
+   * When true, the margin chip column never renders on Obsidian Mobile
+   * (phones specifically — Platform.isMobile; tablets get Obsidian's
+   * desktop-style layout and are unaffected by this setting), regardless
+   * of pane width. Same fallback as the narrow-pane case: superscripts and
+   * underlined links keep working, only the chip column is skipped.
+   */
+  disableChipsOnMobile: boolean;
   agent: AgentSettings;
   /** Values here are already run through encryptSecret() — never plaintext at rest when a keychain is available. */
   secrets: SecretSettings;
@@ -40,6 +60,12 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
   frontmatterKey: 'margin-notes',
   folderPath: 'book',
   marginWidth: 220,
+  // Below this pane width, chips hide (see interface doc comment). 700px is
+  // roughly "a single note pane on a 13" laptop split into two side by
+  // side" — narrower than that and marginWidth (default 220) starts eating
+  // a genuinely uncomfortable fraction of the remaining prose width.
+  narrowPaneThreshold: 700,
+  disableChipsOnMobile: true,
   agent: {
     provider: 'claude',
     modelByProvider: {
@@ -145,7 +171,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setDesc('Space (in pixels) reserved on the right for note chips.')
       .addSlider((slider) =>
         slider
-          .setLimits(140, 360, 10)
+          .setLimits(200, 460, 10)
           .setValue(s.marginWidth)
           .setDynamicTooltip()
           .onChange(async (value) => {
@@ -153,6 +179,40 @@ export class MarginNotesSettingTab extends PluginSettingTab {
             await this.save();
             this.plugin.applyMarginWidth();
           })
+      );
+
+    new Setting(containerEl)
+      .setName('Hide chips in narrow panes')
+      .setDesc(
+        'Below this pane width, the margin chip column hides itself (e.g. when you split the ' +
+          'editor into two notes side by side). Superscript note numbers and underlined links keep ' +
+          'working as normal — only the chip column hides. Set to 0 to never hide chips.'
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 1000, 10)
+          .setValue(s.narrowPaneThreshold)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            s.narrowPaneThreshold = value;
+            await this.save();
+            this.plugin.refreshAllEditors();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Hide chips on mobile')
+      .setDesc(
+        'Turn off the margin chip column on Obsidian Mobile phones (tablets are unaffected — they ' +
+          'use the same desktop-style layout). Superscripts and underlined links still work; this ' +
+          'only affects the chip column, which needs more horizontal room than most phones have.'
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(s.disableChipsOnMobile).onChange(async (value) => {
+          s.disableChipsOnMobile = value;
+          await this.save();
+          this.plugin.refreshAllEditors();
+        })
       );
 
     // ---------------------------------------------------------------- Agent

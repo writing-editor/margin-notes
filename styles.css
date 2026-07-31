@@ -38,20 +38,22 @@
 }
 
 /* --- Inline link/embed text (plain-prose rendering of [[...]]/![[...]]) --- */
-/* Deliberately NOT styled like Obsidian's default internal links (no accent
-   color, no underline) — reads as normal prose. Still clickable (see
-   linkMarkers.ts's mousedown handler), with only a very subtle hover cue so
-   it's discoverable without visually shouting "I am a link". Kept as its
-   own class rather than reusing .mn-anchor/.mn-marker, which are for `mn:`
-   note superscripts and stay visually/semantically distinct from this. */
+/* Originally spec'd as fully color-inherited with only a hover cue, but
+   that reads as indistinguishable from plain prose at rest — too subtle to
+   discover. Compromise: a permanent, muted accent color + underline that's
+   visibly a link without being Obsidian's loud default blue. Distinct from
+   .mn-anchor/.mn-marker (those are `mn:` note superscripts) and kept as its
+   own class for the same reason. */
 .mn-linktext {
-  color: inherit;
+  color: var(--text-accent);
+  text-decoration: underline;
+  text-decoration-color: var(--text-faint);
+  text-underline-offset: 2px;
   cursor: pointer;
 }
 
 .mn-linktext:hover {
-  text-decoration: underline;
-  text-decoration-color: var(--text-faint);
+  text-decoration-color: var(--text-accent);
 }
 
 /* --- Margin chips --- */

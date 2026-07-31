@@ -2,22 +2,38 @@ import { EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
 import { editorInfoField } from 'obsidian';
 import { isMarginNotesEnabled, runtime } from './runtime';
-import { forceMarginRefresh } from './noteMarkers';
+import { forceMarginRefresh, findNoteMarkers } from './noteMarkers';
 
-// Matches both [[...]] and ![[...]] (embed), capturing everything between
-// the double brackets. Deliberately permissive at this stage — the finer
-// split into target/heading/alias happens in parseLinkInner() below, kept
-// separate so the regex itself stays simple and this file has one obvious
-// place to add test cases for the target|alias / target#heading grammar.
+// Matches [[...]], capturing everything between the double brackets. This
+// plugin deliberately does NOT touch ![[embeds]] at all — not in text, not
+// in the margin. Embeds were tried (parsed, given their own margin chip
+// AND left to Obsidian's native inline embed rendering) and reverted: it
+// meant the same content showed twice (once live-embedded in the running
+// text via Obsidian itself, once again as a margin chip), which added
+// visual clutter and complexity without benefit — Obsidian's own inline
+// embed rendering already IS the "live preview," right in the text where
+// it's written. `[[links]]` don't have that overlap: Obsidian leaves them
+// as plain clickable text with no inline preview, which is exactly the gap
+// this plugin's margin chip fills. So links get full treatment (inline
+// plain-text widget + margin chip + async preview); embeds get none of it
+// and are left 100% to Obsidian.
 //
-// Examples this must handle (see §2.3 of the plan):
+// The regex itself does NOT exclude a leading "!" (no negative lookbehind
+// here) — Obsidian's own mobile JS engine (iOS/Safari's older WebKit
+// versions used inside the iOS app) does not support regex lookbehind
+// assertions, and using one would silently make every [[link]] fail to
+// match on iOS rather than throwing an obvious error. Instead,
+// findLinkMarkers() below does the "was this preceded by !" check manually
+// against the raw text, which is lookbehind-free and behaves identically.
+//
+// Examples this must handle:
 //   [[Note]]                      -> target: Note
 //   [[Note|Alias]]                -> target: Note, alias: Alias
 //   [[Note#Heading]]               -> target: Note, heading: Heading
 //   [[Note#Heading|Alias]]         -> target: Note, heading: Heading, alias: Alias
-//   ![[Note]]                      -> same as [[Note]], isEmbed: true
-//   ![[Note#Heading]]              -> same as [[Note#Heading]], isEmbed: true
-export const LINK_RE = /(!?)\[\[([^\]]+)\]\]/g;
+// Explicitly NOT matched (left to Obsidian entirely):
+//   ![[Note]], ![[Note#Heading]], etc. — filtered out in findLinkMarkers().
+export const LINK_RE = /\[\[([^\]]+)\]\]/g;
 
 export interface LinkMarker {
   from: number;
@@ -26,11 +42,10 @@ export interface LinkMarker {
   // sequential numbering (links aren't numbered in the UI, so "the marker at
   // this position" is a sufficient and simpler identity than a counter that
   // would shift every id whenever a link is added/removed earlier in the doc).
-  isEmbed: boolean;
   linkpath: string; // the raw target name, e.g. "Note" (no heading/alias)
   heading: string | null;
   alias: string | null;
-  raw: string; // the full matched text, e.g. "[[Note#Heading|Alias]]" or "![[Note]]"
+  raw: string; // the full matched text, e.g. "[[Note#Heading|Alias]]"
 }
 
 /**
@@ -64,15 +79,16 @@ export function findLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
   let match: RegExpExecArray | null;
   LINK_RE.lastIndex = 0;
   while ((match = LINK_RE.exec(text))) {
-    const isEmbed = match[1] === '!';
-    const inner = match[2];
+    // Reject ![[...]] embeds — see LINK_RE's comment for why this is a
+    // manual character check rather than a regex lookbehind.
+    if (match.index > 0 && text[match.index - 1] === '!') continue;
+    const inner = match[1];
     const { linkpath, heading, alias } = parseLinkInner(inner);
     if (!linkpath) continue; // malformed / empty target — skip rather than crash
     markers.push({
       from: match.index,
       to: match.index + match[0].length,
       id: `link:${match.index}`,
-      isEmbed,
       linkpath,
       heading,
       alias,
@@ -80,6 +96,23 @@ export function findLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
     });
   }
   return markers;
+}
+
+/**
+ * Same as findLinkMarkers(), but excludes any link whose range falls
+ * inside an [mn: ...] note's own range (see buildDecorations()'s comment
+ * for why nested links are suppressed rather than double-decorated). This
+ * is the version marginPanel.ts should call for building margin chips —
+ * using the raw findLinkMarkers() there instead would produce a margin
+ * chip for a link that isn't actually rendered as a clickable inline
+ * widget (since buildDecorations() below independently suppresses it),
+ * which would be a confusing mismatch: a chip in the margin pointing at
+ * text that doesn't behave like a link where it's written.
+ */
+export function findTopLevelLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
+  const links = findLinkMarkers(doc);
+  const noteRanges = findNoteMarkers(doc).map((n): [number, number] => [n.from, n.to]);
+  return links.filter((m) => !noteRanges.some(([f, t]) => overlaps(f, t, m.from, m.to)));
 }
 
 /** What to actually display inline: the alias if present, else the bare target name. */
@@ -142,7 +175,23 @@ function buildDecorations(state: EditorState): DecorationSet {
   if (!isMarginNotesEnabled(file)) return Decoration.none;
 
   const builder = new RangeSetBuilder<Decoration>();
-  const markers = findLinkMarkers(state.doc);
+  // findTopLevelLinkMarkers (not findLinkMarkers) — a [[link]] written
+  // INSIDE an [mn: ...] note's own content (e.g.
+  // `[mn: see [[Character Bible]] for context]`) must NOT also get its own
+  // independent inline Decoration.replace here — noteMarkerField already
+  // claims that whole range (note text included) as ITS replaced widget.
+  // Two different extensions each trying to Decoration.replace overlapping,
+  // nested ranges is not something CM6 resolves predictably (its own docs/
+  // examples treat "don't create overlapping replace decorations" as the
+  // extension author's responsibility, not something the library sorts
+  // out for you) — so this plugin resolves it explicitly itself: the note
+  // wins, and a link nested inside one is left as plain text WITHIN the
+  // note's own collapsed content, not turned into a second, competing
+  // clickable widget. (It's still there in the raw markdown — clicking
+  // into the note to edit it, which noteMarkers.ts already supports,
+  // reveals and lets you edit the nested [[...]] like any other text in
+  // the note.)
+  const markers = findTopLevelLinkMarkers(state.doc);
   const sel = activeRanges(state);
   const sourcePath = file?.path ?? '';
 
@@ -178,5 +227,5 @@ export const linkMarkerField = StateField.define<DecorationSet>({
 export function getActiveLinkMarkers(state: EditorState): LinkMarker[] {
   const info = state.field(editorInfoField, false);
   if (!isMarginNotesEnabled(info?.file ?? null)) return [];
-  return findLinkMarkers(state.doc);
+  return findTopLevelLinkMarkers(state.doc);
 }

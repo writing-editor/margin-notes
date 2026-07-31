@@ -1,10 +1,11 @@
 import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import { editorInfoField } from 'obsidian';
+import { editorInfoField, Platform } from 'obsidian';
+import type { Component } from 'obsidian';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { findNoteMarkers, forceMarginRefresh, NoteMarker } from './noteMarkers';
-import { findLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
-import { getLinkPreview } from './linkPreview';
-import { noteTypeColor, LINK_CHIP_COLOR, EMBED_CHIP_COLOR } from './noteTypes';
+import { findTopLevelLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
+import { getLinkPreview, renderForConsumer } from './linkPreview';
+import { noteTypeColor, LINK_CHIP_COLOR } from './noteTypes';
 import { MarginItem, layoutMarginItems } from './marginLayout';
 
 // Exported so main.ts's insert-note command can splice a new marker into a
@@ -50,6 +51,7 @@ function mergeByFrom(a: MarginItem[], b: MarginItem[]): MarginItem[] {
 class MarginColumn {
   private readonly track: HTMLDivElement;
   private rafHandle: number | null = null;
+  private readonly resizeObserver: ResizeObserver;
   // Tracks the current preview-update subscription per link marker id, so
   // rebuilding the same marker's chip on a later render() pass can
   // unsubscribe the previous chip's listener before registering the new
@@ -57,6 +59,15 @@ class MarginColumn {
   // trigger one) would leak one more listener into linkPreview.ts's cache
   // entry forever. See buildLinkChip() for where this is read/written.
   private readonly linkPreviewUnsubs = new Map<string, () => void>();
+  // Each chip's rendered preview now owns its own Component (see
+  // linkPreview.ts's renderForConsumer — this replaced one shared,
+  // plugin-lifetime Component after that design was found to let one
+  // chip's rendered DOM node get silently stolen by another chip
+  // referencing the same target file). Tracked per marker id, same
+  // rebuild-replaces-previous pattern as linkPreviewUnsubs, so the
+  // previous render's Component is always unloaded before a new one
+  // is created for the same marker.
+  private readonly linkPreviewComponents = new Map<string, Component>();
 
   constructor(private readonly view: EditorView) {
     this.track = document.createElement('div');
@@ -67,6 +78,18 @@ class MarginColumn {
     // space. This is the trick that made the original app's manual
     // scroll-driven positionChips() unnecessary here.
     view.scrollDOM.appendChild(this.track);
+    // Belt-and-suspenders for the narrow-pane gate (see render()):
+    // ViewUpdate.geometryChanged SHOULD already catch a split-pane resize
+    // (CM6 observes its own DOM element's size internally and sets its
+    // Geometry flag on change), but that's an internal implementation
+    // detail we don't want this feature silently depending on. Observing
+    // scrollDOM directly here guarantees a resize below/above
+    // narrowPaneThreshold always triggers a re-render and correctly
+    // shows/hides the chip column, regardless of whether CM6's own flag
+    // happens to fire for a given resize path (e.g. resizing without any
+    // accompanying doc/selection/viewport change).
+    this.resizeObserver = new ResizeObserver(() => this.schedule());
+    this.resizeObserver.observe(view.scrollDOM);
     this.schedule();
   }
 
@@ -83,13 +106,62 @@ class MarginColumn {
     const file = info?.file ?? null;
     const enabled = isMarginNotesEnabled(file);
 
-    this.view.scrollDOM.classList.toggle('mn-has-margin', enabled);
+    // Narrow-pane / mobile gate. This ONLY affects the chip column built by
+    // THIS class — noteMarkerField's superscript numbers and
+    // linkMarkerField's underlined inline link text are separate CM6
+    // StateFields that keep rendering completely unaffected by any of
+    // this, on any pane width, on any platform. That split (chips here vs.
+    // inline decorations in their own StateFields) is exactly what makes
+    // this gate simple: there's no shared rendering path to carefully
+    // thread a "skip this part" flag through, we just don't build a track
+    // at all.
+    //
+    // Mobile check first (cheap, no DOM measurement needed) — Platform.
+    // isMobile covers phones specifically (Obsidian gives tablets the
+    // desktop-style layout, so this deliberately does NOT also gate on
+    // Platform.isTablet).
+    const mobileBlocked = runtime.settings.disableChipsOnMobile && Platform.isMobile;
+
+    // Pane-width check: view.scrollDOM's own clientWidth is the actual
+    // rendered width of THIS editor pane specifically — reading it here
+    // (rather than window.innerWidth) is what makes a split-pane layout
+    // correctly narrow just the half that's actually narrow, without
+    // affecting a sibling pane that still has room. threshold <= 0 means
+    // "never hide for width" (see settings.ts's doc comment on
+    // narrowPaneThreshold).
+    const threshold = runtime.settings.narrowPaneThreshold;
+    const paneWidth = this.view.scrollDOM.clientWidth;
+    const paneTooNarrow = threshold > 0 && paneWidth < threshold;
+
+    const chipsAllowed = enabled && !mobileBlocked && !paneTooNarrow;
+
+    // mn-has-margin toggles on chipsAllowed, not on `enabled` alone — this
+    // class is what reserves the CSS padding/margin space for the chip
+    // column via --mn-margin-width. If chips are suppressed for width/
+    // mobile reasons but this class stayed on anyway, the pane would
+    // reserve empty space for nothing; basing it on chipsAllowed instead
+    // means that reservation correctly disappears too, giving the narrow
+    // pane's prose its full width back — which is the whole point of this
+    // gate.
+    this.view.scrollDOM.classList.toggle('mn-has-margin', chipsAllowed);
     this.view.scrollDOM.style.setProperty('--mn-margin-width', `${runtime.settings.marginWidth}px`);
     this.track.replaceChildren();
-    if (!enabled) return;
+    if (!chipsAllowed) {
+      // Chips just got suppressed (disabled entirely, or the pane shrank
+      // below threshold, or mobile) — clean up anything left over from a
+      // previous render pass where they WERE showing, same teardown as
+      // destroy() below, just without actually destroying the column
+      // itself (the pane could grow back past threshold on the very next
+      // resize, at which point a normal render() call resumes as usual).
+      for (const unsub of this.linkPreviewUnsubs.values()) unsub();
+      this.linkPreviewUnsubs.clear();
+      for (const component of this.linkPreviewComponents.values()) component.unload();
+      this.linkPreviewComponents.clear();
+      return;
+    }
 
     const markers = findNoteMarkers(this.view.state.doc);
-    const linkMarkers = findLinkMarkers(this.view.state.doc);
+    const linkMarkers = findTopLevelLinkMarkers(this.view.state.doc);
 
     // Map both marker kinds into the generic MarginItem shape the shared
     // layout pass operates over (marginLayout.ts), then merge-sort by
@@ -115,21 +187,20 @@ class MarginColumn {
   private buildLinkChip(marker: LinkMarker): HTMLDivElement {
     const chip = document.createElement('div');
     chip.className = 'mn-chip mn-chip-link';
-    chip.style.borderLeftColor = marker.isEmbed ? EMBED_CHIP_COLOR : LINK_CHIP_COLOR;
+    chip.style.borderLeftColor = LINK_CHIP_COLOR;
     chip.dataset.linkId = marker.id;
 
     const label = document.createElement('span');
     label.className = 'mn-chip-label';
-    label.textContent = marker.isEmbed ? 'embed' : 'link';
+    label.textContent = 'link';
     chip.appendChild(label);
 
     // Placeholder content shown synchronously while the async preview
-    // fetch (linkPreview.ts) is in flight — just the bare title, per §2.2's
-    // "must render in the correct position immediately... with a
-    // lightweight loading state" requirement. Kept in its own wrapper span
-    // (not reusing the plain .mn-chip-text the note chips use) so the
-    // preview-swap logic below has one clearly-scoped element to replace
-    // the *contents* of, without touching the label span next to it.
+    // fetch (linkPreview.ts) is in flight — just the bare title. Kept in
+    // its own wrapper span (not reusing the plain .mn-chip-text the note
+    // chips use) so the preview-swap logic below has one clearly-scoped
+    // element to replace the *contents* of, without touching the label
+    // span next to it.
     const body = document.createElement('span');
     body.className = 'mn-chip-link-body';
     body.textContent = linkDisplayText(marker);
@@ -140,12 +211,41 @@ class MarginColumn {
     const app = runtime.app;
 
     if (app) {
+      // Bumped each time applyState() kicks off a fresh renderForConsumer()
+      // call, so that if TWO renders end up in flight for this same chip
+      // (e.g. the target file changes again before the first re-render
+      // finished — see registerLinkPreviewInvalidation) the OLDER one's
+      // result is discarded on arrival instead of clobbering the newer
+      // one. Purely a per-chip local guard — unrelated to the cache-level
+      // fix below.
+      let renderToken = 0;
+
       const applyState = () => {
         const { state } = getLinkPreview(app, marker, sourcePath, applyState);
         if (state.status === 'ready') {
-          body.replaceChildren(state.el);
-          chip.classList.add('mn-chip-link-loaded');
-          chip.classList.remove('mn-chip-link-missing');
+          const myToken = ++renderToken;
+          // Each chip renders its OWN fresh DOM element from the cached
+          // markdown string (renderForConsumer), rather than reusing a
+          // single shared element across every chip that references the
+          // same target — a shared element could only ever have one
+          // parent, so whichever chip last called replaceChildren() on it
+          // silently stole it from every other chip pointing at the same
+          // note. See linkPreview.ts's cache comment for the full story.
+          renderForConsumer(app, state).then(({ el, component }) => {
+            if (myToken !== renderToken) {
+              // Superseded by a newer render before this one finished —
+              // discard it (and its Component) rather than applying stale
+              // content or leaking the Component.
+              component.unload();
+              return;
+            }
+            const prevComponent = this.linkPreviewComponents.get(marker.id);
+            prevComponent?.unload();
+            this.linkPreviewComponents.set(marker.id, component);
+            body.replaceChildren(el);
+            chip.classList.add('mn-chip-link-loaded');
+            chip.classList.remove('mn-chip-link-missing');
+          });
         } else if (state.status === 'missing') {
           body.textContent = `No note titled "${state.linkpath}" yet`;
           chip.classList.add('mn-chip-link-missing');
@@ -165,32 +265,25 @@ class MarginColumn {
       // state immediately.
       const { unsubscribe } = getLinkPreview(app, marker, sourcePath, applyState);
       applyState();
-      // IMPORTANT: this chip's own DOM node is discarded and rebuilt from
-      // scratch on every render() pass (this.track.replaceChildren() at the
-      // top of render()) — there is currently no explicit teardown hook run
-      // per-chip when that happens. Attaching unsubscribe here means once
-      // this specific chip element is garbage-collected (no more DOM
-      // references, no more closures holding it) the listener technically
-      // still lives in the cache entry's `listeners` Set until something
-      // removes it. To keep this bounded rather than accumulating forever
-      // across many render passes, remove the immediately-previous
-      // subscription for the same marker id proactively: getLinkPreview
-      // dedupes by Set identity, so the simplest safe fix is to unsubscribe
-      // this listener the next time THIS SAME marker's chip is rebuilt.
-      // We track that via a WeakMap-free approach: store the unsubscribe
-      // function on the track's dataset-adjacent map keyed by marker.id,
-      // and call the previous one (if any) before registering this one.
+      // This chip's own DOM node is discarded and rebuilt from scratch on
+      // every render() pass (this.track.replaceChildren() at the top of
+      // render()) — docChanged/viewportChanged/selectionSet can all
+      // trigger one. Unsubscribing the PREVIOUS listener for this same
+      // marker id before registering the new one keeps this bounded to at
+      // most one live listener (and, via linkPreviewComponents above, at
+      // most one live rendered Component) per marker at any time, instead
+      // of accumulating one more of each on every re-render pass.
       const prevUnsub = this.linkPreviewUnsubs.get(marker.id);
       if (prevUnsub) prevUnsub();
       this.linkPreviewUnsubs.set(marker.id, unsubscribe);
     }
 
-    // Clicking a link/embed chip navigates to that note — same action as
+    // Clicking a link chip navigates to that note — same action as
     // clicking the inline text (linkMarkers.ts's LinkInlineWidget). This is
     // NOT "select text in the document" the way mn chip clicks are
     // (focusNoteText below is specific to mn markers' edit-in-place model;
-    // link/embed chips have no inline note body to select, since their
-    // inline text IS the link itself).
+    // link chips have no inline note body to select, since their inline
+    // text IS the link itself).
     chip.addEventListener('mousedown', (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -247,8 +340,11 @@ class MarginColumn {
   }
 
   destroy() {
+    this.resizeObserver.disconnect();
     for (const unsub of this.linkPreviewUnsubs.values()) unsub();
     this.linkPreviewUnsubs.clear();
+    for (const component of this.linkPreviewComponents.values()) component.unload();
+    this.linkPreviewComponents.clear();
     this.track.remove();
     this.view.scrollDOM.classList.remove('mn-has-margin');
   }
