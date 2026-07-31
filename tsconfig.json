@@ -6,11 +6,10 @@
     "target": "ES2020",
     "allowJs": true,
     "noImplicitAny": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "importHelpers": true,
     "isolatedModules": true,
     "strictNullChecks": true,
-    "ignoreDeprecations": "5.0",
     "lib": ["DOM", "ES2020"]
   },
   "include": ["**/*.ts"]

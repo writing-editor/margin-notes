@@ -68,6 +68,29 @@ class MarginColumn {
   // previous render's Component is always unloaded before a new one
   // is created for the same marker.
   private readonly linkPreviewComponents = new Map<string, Component>();
+  // Records, per link marker id, the markdown content string that marker's
+  // chip was MOST RECENTLY LAID OUT against (i.e. what layoutMarginItems()
+  // measured this chip's offsetHeight while showing). This exists to solve
+  // a real bug: layoutMarginItems() runs synchronously, before any link's
+  // async preview has necessarily resolved — so a chip can get positioned/
+  // clamped based on its tiny one-line "pending" placeholder, and when the
+  // real (often much taller) preview content swaps in afterward, nothing
+  // re-ran the layout pass against the new, correct height. With several
+  // links laid out close together, every one of them could get sized
+  // against a placeholder and none of them clamped, then all grow to full
+  // height in place once their previews load — overlapping or touching
+  // with zero gap.
+  // The fix (see buildLinkChip()): every time a chip's content is (re)set,
+  // compare it against what's recorded here for that marker id. If it
+  // differs — including the transition from "no entry yet" to "real
+  // markdown text" — schedule a full re-render (which reruns
+  // layoutMarginItems with this chip's now-correct height) exactly once,
+  // then update the record. If a later render rebuilds the SAME marker's
+  // chip and finds the SAME content already recorded, no re-layout is
+  // triggered — this is what breaks what would otherwise be an infinite
+  // reschedule loop (each reschedule would otherwise rebuild the chip,
+  // synchronously find the same warm cache, and reschedule again forever).
+  private readonly linkChipLayoutContent = new Map<string, string>();
 
   constructor(private readonly view: EditorView) {
     this.track = document.createElement('div');
@@ -97,11 +120,29 @@ class MarginColumn {
     if (this.rafHandle !== null) return;
     this.rafHandle = requestAnimationFrame(() => {
       this.rafHandle = null;
-      this.render();
+      // render() is async (see its own doc comment for why: it needs to
+      // pre-resolve every link's preview content BEFORE laying anything
+      // out, so layoutMarginItems() measures real heights instead of
+      // placeholders) — schedule() itself stays fire-and-forget here since
+      // nothing needs to wait on it; render() manages its own generation
+      // guard internally against overlapping calls.
+      void this.render();
     });
   }
 
-  private render() {
+  /**
+   * Guards against overlapping render() calls: schedule() can fire again
+   * (e.g. a fast series of scroll/selection events) while a previous
+   * render() is still mid-flight in its async pre-fetch step below. Each
+   * call captures its own generation number; if a newer call started
+   * before this one reached the point of actually mutating the DOM, this
+   * (now-stale) call abandons itself rather than laying out against
+   * possibly-outdated marker positions.
+   */
+  private renderGeneration = 0;
+
+  private async render() {
+    const myGeneration = ++this.renderGeneration;
     const info = this.view.state.field(editorInfoField, false);
     const file = info?.file ?? null;
     const enabled = isMarginNotesEnabled(file);
@@ -148,7 +189,6 @@ class MarginColumn {
     // gate.
     this.view.scrollDOM.classList.toggle('mn-has-margin', chipsAllowed);
     this.view.scrollDOM.style.setProperty('--mn-margin-width', `${runtime.settings.marginWidth}px`);
-    this.track.replaceChildren();
     if (!chipsAllowed) {
       // Chips just got suppressed (disabled entirely, or the pane shrank
       // below threshold, or mobile) — clean up anything left over from a
@@ -156,6 +196,7 @@ class MarginColumn {
       // destroy() below, just without actually destroying the column
       // itself (the pane could grow back past threshold on the very next
       // resize, at which point a normal render() call resumes as usual).
+      this.track.replaceChildren();
       for (const unsub of this.linkPreviewUnsubs.values()) unsub();
       this.linkPreviewUnsubs.clear();
       for (const component of this.linkPreviewComponents.values()) component.unload();
@@ -165,6 +206,54 @@ class MarginColumn {
 
     const markers = findNoteMarkers(this.view.state.doc);
     const linkMarkers = findTopLevelLinkMarkers(this.view.state.doc);
+
+    // THE ACTUAL FIX for chips visually touching/overlapping with no gap
+    // when several links are laid out close together (e.g. two links each
+    // on their own line with one blank line between): pre-resolve and
+    // pre-render EVERY top-level link's preview content now, before
+    // layoutMarginItems() ever runs, rather than letting each chip kick off
+    // its own async render independently and hoping a later reschedule
+    // catches up. getLinkPreview() itself is synchronous and safe to call
+    // here (it only ever kicks off a fetch if the cache is cold — see
+    // linkPreview.ts); this loop's actual awaiting is only for
+    // renderForConsumer() calls on links whose cache is ALREADY warm
+    // ('ready' state) at this exact moment, which is the common case for
+    // any link that isn't brand new. A link whose fetch is still genuinely
+    // in flight (a fresh 'pending' state) is deliberately NOT awaited here
+    // — waiting on disk I/O before ever painting anything would delay the
+    // whole margin column's first paint for one slow link; that case still
+    // falls back to the old placeholder-then-live-update path inside
+    // buildLinkChip(), same as before this fix.
+    const prefetched = new Map<string, { el: HTMLElement; component: Component }>();
+    await Promise.all(
+      linkMarkers.map(async (marker) => {
+        const sourcePath = file?.path ?? '';
+        const app = runtime.app;
+        if (!app) return;
+        // onUpdate is a no-op here — this call's only purpose is to read
+        // whatever state is CURRENTLY cached (and kick off a fetch if
+        // needed for buildLinkChip's own subscription to pick up later);
+        // the actual live-updating subscription is still registered by
+        // buildLinkChip() itself below, same as before.
+        const { state } = getLinkPreview(app, marker, sourcePath, () => {});
+        if (state.status !== 'ready') return; // still pending/missing — buildLinkChip handles it
+        const rendered = await renderForConsumer(app, state);
+        prefetched.set(marker.id, rendered);
+      })
+    );
+
+    // If a NEWER render() call started while the awaits above were in
+    // flight, abandon this one — the newer call will redo this same
+    // pre-fetch pass against current marker positions and win the race to
+    // actually mutate the DOM. Without this check, an old, slow render()
+    // call finishing late could stomp on a newer one's already-correct
+    // layout.
+    if (myGeneration !== this.renderGeneration) {
+      for (const { component } of prefetched.values()) component.unload();
+      return;
+    }
+
+    this.track.replaceChildren();
 
     // Map both marker kinds into the generic MarginItem shape the shared
     // layout pass operates over (marginLayout.ts), then merge-sort by
@@ -180,14 +269,14 @@ class MarginColumn {
     const linkItems: MarginItem[] = linkMarkers.map((marker) => ({
       from: marker.from,
       id: marker.id,
-      buildChip: () => this.buildLinkChip(marker),
+      buildChip: () => this.buildLinkChip(marker, prefetched.get(marker.id)),
     }));
     const items = mergeByFrom(noteItems, linkItems);
 
     layoutMarginItems(this.view, this.track, items);
   }
 
-  private buildLinkChip(marker: LinkMarker): HTMLDivElement {
+  private buildLinkChip(marker: LinkMarker, prefetched?: { el: HTMLElement; component: Component }): HTMLDivElement {
     const chip = document.createElement('div');
     chip.className = 'mn-chip mn-chip-link';
     chip.style.borderLeftColor = LINK_CHIP_COLOR;
@@ -213,14 +302,28 @@ class MarginColumn {
     const sourcePath = info?.file?.path ?? '';
     const app = runtime.app;
 
+    if (prefetched) {
+      // Content was ALREADY resolved and rendered before layoutMarginItems()
+      // ran this pass (see render()'s pre-fetch step above) — apply it
+      // synchronously right now, so this chip's real, final content is
+      // what gets measured for offsetHeight during layout, not a
+      // placeholder. This is the actual fix for chips visually touching
+      // when several links sit close together: their true heights are
+      // known BEFORE layout runs, not corrected after the fact.
+      const prevComponent = this.linkPreviewComponents.get(marker.id);
+      prevComponent?.unload();
+      this.linkPreviewComponents.set(marker.id, prefetched.component);
+      body.replaceChildren(prefetched.el);
+      chip.classList.add('mn-chip-link-loaded');
+    }
+
     if (app) {
       // Bumped each time applyState() kicks off a fresh renderForConsumer()
       // call, so that if TWO renders end up in flight for this same chip
       // (e.g. the target file changes again before the first re-render
       // finished — see registerLinkPreviewInvalidation) the OLDER one's
       // result is discarded on arrival instead of clobbering the newer
-      // one. Purely a per-chip local guard — unrelated to the cache-level
-      // fix below.
+      // one. Purely a per-chip local guard.
       let renderToken = 0;
 
       const applyState = () => {
@@ -248,6 +351,21 @@ class MarginColumn {
             body.replaceChildren(el);
             chip.classList.add('mn-chip-link-loaded');
             chip.classList.remove('mn-chip-link-missing');
+            // This chip's real content just arrived asynchronously
+            // (the common case here is: this link's fetch was genuinely
+            // still in flight when render()'s pre-fetch step ran, since
+            // that step deliberately doesn't wait on cold fetches — see
+            // render()'s comment). Schedule a re-layout so
+            // layoutMarginItems() re-measures this chip's now-correct
+            // height instead of leaving it sized against the placeholder
+            // it had during the last layout pass. This can still fire more
+            // than once across a chip's lifetime (e.g. once here, then
+            // again after a vault.on('modify') invalidation) — that's
+            // fine; it only ever fires when content actually changes, not
+            // on every rebuild, since a rebuild against an already-warm
+            // cache goes through the `prefetched` branch above instead of
+            // this subscription path reaching 'ready' from scratch.
+            this.schedule();
           });
         } else if (state.status === 'missing') {
           body.textContent = `No note titled "${state.linkpath}" yet`;
@@ -265,9 +383,14 @@ class MarginColumn {
       // — a single call handles both the synchronous initial paint and the
       // async swap-in-place, since getLinkPreview() always registers
       // onUpdate regardless of whether it returns 'pending' or a settled
-      // state immediately.
+      // state immediately. When `prefetched` was already applied above,
+      // this call will immediately see the same 'ready' state and just
+      // re-confirm it (harmless — renderForConsumer() runs once more
+      // redundantly in that case, but does not loop, since nothing here
+      // schedules another render when reached via this synchronous initial
+      // call; only the LATER, genuinely-async arm above does that).
       const { unsubscribe } = getLinkPreview(app, marker, sourcePath, applyState);
-      applyState();
+      if (!prefetched) applyState();
       // This chip's own DOM node is discarded and rebuilt from scratch on
       // every render() pass (this.track.replaceChildren() at the top of
       // render()) — docChanged/viewportChanged/selectionSet can all
