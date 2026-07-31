@@ -1,12 +1,76 @@
 import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import { editorInfoField, Platform } from 'obsidian';
-import type { Component } from 'obsidian';
+import { editorInfoField, Platform, Modal, Notice } from 'obsidian';
+import type { App, Component, TFile } from 'obsidian';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { findNoteMarkers, forceMarginRefresh, NoteMarker } from './noteMarkers';
 import { findTopLevelLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
 import { getLinkPreview, renderForConsumer } from './linkPreview';
 import { noteTypeColor, LINK_CHIP_COLOR } from './noteTypes';
 import { MarginItem, layoutMarginItems } from './marginLayout';
+
+/**
+ * Small trash-can icon (not an "×") for the per-chip delete button — an "×"
+ * reads as "dismiss/close the hover-zoom", which is exactly the wrong
+ * signal for a destructive, irreversible-feeling action. A bin icon makes
+ * "this deletes the note" unambiguous at a glance, without needing a text
+ * label the tiny badge has no room for anyway.
+ */
+const TRASH_ICON_SVG =
+  '<svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+
+/**
+ * One shared builder for both chip kinds' delete buttons, so the pinned-
+ * badge positioning/hover-reveal behaviour (all in styles.css's
+ * .mn-chip-delete rules) and the "don't let this click fall through to the
+ * chip's own mousedown handler" guard live in exactly one place rather than
+ * being duplicated (and risking drifting apart) between buildChip() and
+ * buildLinkChip().
+ */
+function buildDeleteButton(onDelete: () => void): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = 'mn-chip-delete';
+  btn.type = 'button';
+  btn.setAttribute('aria-label', 'Delete note');
+  btn.innerHTML = TRASH_ICON_SVG;
+  btn.addEventListener('mousedown', (evt) => {
+    // Must stop this before it bubbles to the chip's own mousedown listener
+    // (buildChip's focusNoteText / buildLinkChip's openLinkText) — otherwise
+    // deleting would also fire the chip's normal "navigate/focus" action on
+    // the same click.
+    evt.preventDefault();
+    evt.stopPropagation();
+    onDelete();
+  });
+  return btn;
+}
+
+/**
+ * Tiny confirm dialog for the one truly irreversible-feeling action here:
+ * deleting a linked note's actual file. Obsidian has no built-in confirm
+ * modal, so this is the minimal Modal subclass needed for a yes/no prompt.
+ * Deliberately NOT used for mn (inline) notes — deleting inline text the
+ * user can immediately Ctrl+Z is a much lower-stakes action than deleting
+ * a file, so that path (see buildChip below) deletes instantly instead.
+ */
+class ConfirmDeleteFileModal extends Modal {
+  constructor(app: App, private readonly fileName: string, private readonly onConfirm: () => void) {
+    super(app);
+  }
+  onOpen() {
+    this.titleEl.setText('Delete note?');
+    this.contentEl.createEl('p', {
+      text: `"${this.fileName}" will be deleted. This also removes the link from this document.`,
+    });
+    const buttons = this.contentEl.createDiv({ cls: 'mn-confirm-delete-buttons' });
+    const cancelBtn = buttons.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => this.close());
+    const deleteBtn = buttons.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+    deleteBtn.addEventListener('click', () => {
+      this.close();
+      this.onConfirm();
+    });
+  }
+}
 
 // Exported so main.ts's insert-note command can splice a new marker into a
 // specific view without duplicating the [mn.type: content] formatting rule.
@@ -417,7 +481,58 @@ class MarginColumn {
       app.workspace.openLinkText(marker.linkpath, sourcePath);
     });
 
+    // Deleting a link chip is a bigger deal than deleting an mn note: it
+    // deletes the actual target FILE from the vault, not just some inline
+    // text — so, unlike deleteNote() above, this is gated behind a confirm
+    // modal rather than firing instantly. Confirmed deletion also strips
+    // the `[[link]]` markup itself from THIS document (see
+    // deleteLinkedFile()) — leaving it in place would turn the chip into a
+    // permanently broken/"missing" link pointing at a file that no longer
+    // exists, which is exactly the dangling state cleanup is meant to avoid.
+    chip.appendChild(buildDeleteButton(() => this.confirmDeleteLinkedFile(marker, sourcePath)));
+
     return chip;
+  }
+
+  private confirmDeleteLinkedFile(marker: LinkMarker, sourcePath: string) {
+    const app = runtime.app;
+    if (!app) return;
+    const dest = app.metadataCache.getFirstLinkpathDest(marker.linkpath, sourcePath);
+    if (!dest) {
+      // Nothing to delete on disk (already missing) — still let the user
+      // clear the dead [[link]] text out of the document.
+      this.removeLinkMarkup(marker);
+      return;
+    }
+    new ConfirmDeleteFileModal(app, dest.basename, () => this.deleteLinkedFile(marker, dest)).open();
+  }
+
+  private async deleteLinkedFile(marker: LinkMarker, dest: TFile) {
+    const app = runtime.app;
+    if (!app) return;
+    try {
+      // vault.trash's second argument (system trash vs. Obsidian's own
+      // .trash folder) follows the user's own "Deleted files" setting the
+      // same way Obsidian's native file-explorer delete does, rather than
+      // this plugin imposing its own always-permanent app.vault.delete().
+      await app.vault.trash(dest, true);
+    } catch (err) {
+      console.error('Margin Notes: failed to delete linked file', dest.path, err);
+      new Notice(`Margin Notes: could not delete "${dest.basename}".`);
+      return;
+    }
+    this.removeLinkMarkup(marker);
+  }
+
+  /** Strips the `[[...]]` markup itself out of the host document. */
+  private removeLinkMarkup(marker: LinkMarker) {
+    // Re-locate by position rather than trusting the marker's original
+    // from/to, since the doc may have shifted (e.g. an async gap while a
+    // confirm modal was open) between render() and this call.
+    const current = findTopLevelLinkMarkers(this.view.state.doc).find((m) => m.id === marker.id);
+    const from = current?.from ?? marker.from;
+    const to = current?.to ?? marker.to;
+    this.view.dispatch({ changes: { from, to, insert: '' } });
   }
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
@@ -436,19 +551,35 @@ class MarginColumn {
     text.textContent = marker.content;
     chip.appendChild(text);
 
-    // No popup, no separate edit/delete affordances: clicking a chip just
-    // moves the caret into the note's own text in the document (the raw
-    // `[mn.type: content]` markdown, which noteMarkers.ts already reveals
-    // whenever the selection overlaps it). Editing IS editing that text.
-    // Deleting the note is deleting that text — there is nothing else
-    // tracking the note's existence.
+    // Clicking a chip (outside the delete button) just moves the caret into
+    // the note's own text in the document (the raw `[mn.type: content]`
+    // markdown, which noteMarkers.ts already reveals whenever the selection
+    // overlaps it). Editing IS editing that text.
     chip.addEventListener('mousedown', (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
       this.focusNoteText(marker);
     });
 
+    // Deleting an mn note removes its entire `[mn.type: content]` span from
+    // the document in one shot — there is no separate file backing it, so
+    // "delete" here just means "delete that inline text". Instant, no
+    // confirmation: unlike a linked file's deletion below, this is a single
+    // normal doc edit the user can undo with Ctrl+Z like any other typing,
+    // so a modal would be more friction than the action warrants.
+    chip.appendChild(buildDeleteButton(() => this.deleteNote(marker)));
+
     return chip;
+  }
+
+  private deleteNote(marker: NoteMarker) {
+    // Re-locate by id in case the doc shifted since render() (same reason
+    // focusNoteText() does this) — deleting against a stale from/to could
+    // remove the wrong span or a now-incorrect range.
+    const current = findNoteMarkers(this.view.state.doc).find((m) => m.id === marker.id);
+    if (!current) return;
+    this.view.dispatch({ changes: { from: current.from, to: current.to, insert: '' } });
+    this.view.focus();
   }
 
   private focusNoteText(marker: NoteMarker) {

@@ -137,6 +137,73 @@
   margin-right: 4px;
 }
 
+/* --- Chip delete button --- */
+/* Pinned to the chip's own top-right corner, half outside the chip's own
+   box (like a badge), NOT inside its padding — deliberately distinct from
+   the "×" pattern users associate with "close/dismiss this popup", since
+   that would read as "collapse the hover-zoom" rather than "delete the
+   note". A trash-can icon makes the destructive action unambiguous at a
+   glance. Hidden at rest; only fades/scales in once .mn-chip:hover is
+   already active (i.e. after the chip's own zoom has kicked in), and is
+   removed from layout flow via position:absolute so it never affects
+   marginLayout.ts's offsetHeight measurements of the chip itself. */
+.mn-chip-delete {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.4);
+  transform-origin: center;
+  pointer-events: none;
+  transition: transform 120ms ease-out, opacity 120ms ease-out, background 120ms ease-out, color 120ms ease-out;
+  z-index: 21; /* above the chip's own hover z-index of 20 */
+}
+
+.mn-chip-delete svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Only reachable while the chip itself is hovered — matches the existing
+   hover-zoom gesture rather than introducing a second, independent hover
+   target the user has to discover separately. */
+.mn-chip:hover .mn-chip-delete {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.mn-chip-delete:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+  border-color: var(--background-modifier-error);
+}
+
+/* --- Confirm-delete modal (linked-file deletion only) --- */
+
+.mn-confirm-delete-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .mn-chip-text {
   word-break: break-word;
 }
