@@ -96,9 +96,29 @@ export function extractJsonArray(raw: string): unknown[] {
 /**
  * The model is never asked for a character offset — it only ever names a
  * paragraphId it saw tagged in the prompt (buildPrompt() below). This
- * resolves that id back to the ONE real charPos the code already knows for
- * that paragraph (a lookup, not a guess). Ported from
- * lib/ai-proxy.js's resolveParagraphPlacements. Never throws.
+ * resolves that id back to a real charPos the code already knows for that
+ * paragraph (a lookup, not a guess). Ported from lib/ai-proxy.js's
+ * resolveParagraphPlacements. Never throws.
+ *
+ * MULTIPLE notes per paragraph are allowed (previously the second+ note for
+ * any given paragraphId was silently dropped — "one note per paragraph,
+ * first wins" — on the theory that a paragraph should get at most one
+ * combined note). That restriction is gone: margin notes already lay out
+ * side by side without overlapping (marginLayout.ts's clamp/collision
+ * logic), so a paragraph with several genuinely distinct issues should get
+ * several distinct notes rather than being forced into one combined,
+ * harder-to-read note or having extras thrown away entirely.
+ *
+ * Every note for the same paragraph currently resolves to the same
+ * charPos (paragraph.start) until precise in-paragraph anchoring lands
+ * (see the plan doc) — to keep same-paragraph notes from being placed at
+ * the exact identical document offset (which the margin layout's
+ * from-ordering logic would rather not have to disambiguate), each
+ * repeat's charPos is nudged forward by one character per prior note in
+ * that same paragraph, clamped to stay inside the paragraph's own range.
+ * This is a stable, cheap tie-breaker, not real precision — it only
+ * exists so repeats sort in the order the model returned them rather than
+ * comparing equal.
  */
 export function resolveParagraphPlacements(
   rawPlacements: unknown[],
@@ -106,7 +126,7 @@ export function resolveParagraphPlacements(
   existingSpans: Array<{ start: number; end: number }>
 ): { placements: Placement[]; rejected: number } {
   const byId = new Map(paragraphs.map((p) => [p.id, p]));
-  const seenIds = new Set<string>();
+  const seenCounts = new Map<string, number>();
   const out: Placement[] = [];
   let rejected = 0;
 
@@ -118,13 +138,16 @@ export function resolveParagraphPlacements(
     const paragraphId = typeof p.paragraphId === 'string' ? p.paragraphId.trim() : '';
     const paragraph = byId.get(paragraphId);
     if (!paragraph) continue; // unknown/malformed id — nothing safe to clamp to
-    if (seenIds.has(paragraphId)) continue; // one note per paragraph, first wins
-    const charPos = paragraph.start;
+
+    const repeatIndex = seenCounts.get(paragraphId) ?? 0;
+    const paragraphLength = Math.max(0, paragraph.end - paragraph.start);
+    const charPos = paragraph.start + Math.min(repeatIndex, paragraphLength);
+
     if (landsInsideExistingNote(charPos, existingSpans)) {
       rejected++;
       continue;
     }
-    seenIds.add(paragraphId);
+    seenCounts.set(paragraphId, repeatIndex + 1);
     out.push({ charPos, content });
   }
   return { placements: out, rejected };
@@ -181,10 +204,12 @@ function buildPrompt(agentProfilePrompt: string, text: string): BuiltPrompt {
     '  \u2014 do not invent an id, and do not try to point at a specific word,',
     '  sentence, or character within the paragraph; a note always applies',
     '  to the whole paragraph it is tagged with.',
-    '- At most ONE note per paragraph. If a paragraph has more than one',
-    "  issue worth flagging, combine them into that paragraph's single note",
-    '  (e.g. as short clauses or a semicolon-separated list) rather than',
-    '  returning two entries with the same paragraphId.',
+    '- A paragraph MAY get more than one note if it genuinely has more than',
+    '  one DISTINCT issue worth flagging \u2014 return a separate entry per',
+    '  issue (same paragraphId, different content) rather than combining',
+    '  unrelated issues into one crowded note. Do NOT split a single issue',
+    "  into multiple notes just to pad the count, and don't repeat the same",
+    '  point twice for one paragraph.',
     '- If an issue involves more than one paragraph (e.g. two clauses that',
     '  contradict each other), anchor the note at whichever of those',
     '  paragraphs appears FIRST in the text, and mention the other by its',
@@ -218,17 +243,24 @@ function buildPrompt(agentProfilePrompt: string, text: string): BuiltPrompt {
   return { fullSystem, userMessage, paragraphs };
 }
 
-// Hard backstop behind the prompt's own density guidance — a small/local
-// model in particular may ignore the instruction and return a note for
-// nearly every sentence anyway. Caps the ACTUAL placement count at roughly
-// one note per MIN_WORDS_PER_NOTE words, evenly sampled across the sorted
-// list (not "first N in document order", which would silently blind the
-// run to anything past the cap if the model front-loaded its notes).
-// Ported from lib/ai-proxy.js's capPlacementDensity.
-const MIN_WORDS_PER_NOTE = 50;
+// Hard backstop against a runaway model — NOT a target density the plugin
+// tries to steer toward. Multiple notes per paragraph are now expected and
+// welcome (see resolveParagraphPlacements' comment above): a paragraph with
+// several genuinely distinct issues should get several distinct notes, and
+// this cap must not silently thin that out. What it still guards against is
+// a small/local model that ignores the prompt's density guidance entirely
+// and returns a note for nearly every sentence in the whole document — that
+// failure mode is about gross over-triggering across the WHOLE text, not
+// about how many notes land on any one paragraph, so the cap is deliberately
+// generous (roughly one note per MIN_WORDS_PER_NOTE words) rather than
+// tuned to what a "normal" run looks like. Sampling stays even across the
+// sorted list (not "first N in document order") so a runaway model that
+// front-loads notes doesn't blind the run to everything past the cap.
+// Ported from lib/ai-proxy.js's capPlacementDensity, threshold loosened.
+const MIN_WORDS_PER_NOTE = 12;
 function capPlacementDensity(placements: Placement[], text: string): { kept: Placement[]; capped: number } {
   const wordCount = (text || '').trim().split(/\s+/).filter(Boolean).length;
-  const maxNotes = Math.max(3, Math.ceil(wordCount / MIN_WORDS_PER_NOTE));
+  const maxNotes = Math.max(10, Math.ceil(wordCount / MIN_WORDS_PER_NOTE));
   if (placements.length <= maxNotes) return { kept: placements, capped: 0 };
 
   const sorted = [...placements].sort((a, b) => a.charPos - b.charPos);
