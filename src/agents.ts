@@ -5,6 +5,22 @@ import type { SecretSettings } from './settings';
 
 export type AgentProvider = 'claude' | 'openai' | 'gemini' | 'ollama';
 
+/**
+ * Global, cross-cutting prompt preferences (plan §2.5) — deliberately kept
+ * separate from per-agent profile text. Both are "genuine style/behaviour
+ * preferences," not structural/mechanical rules: they template into one
+ * line each of buildPrompt()'s hardcoded instructions, rather than being a
+ * freeform system-prompt override a person could use to accidentally break
+ * the JSON-shape contract the parsing code depends on.
+ */
+export type SpellingConvention = 'british' | 'american' | 'auto';
+export type DensityPosture = 'conservative' | 'balanced' | 'thorough';
+
+export interface PromptOptions {
+  spelling: SpellingConvention;
+  density: DensityPosture;
+}
+
 export const AGENT_PROVIDERS: Array<{ id: AgentProvider; label: string; secretField: keyof SecretSettings }> = [
   { id: 'claude', label: 'Claude', secretField: 'claudeKey' },
   { id: 'openai', label: 'OpenAI', secretField: 'openaiKey' },
@@ -94,10 +110,36 @@ export function extractJsonArray(raw: string): unknown[] {
 }
 
 /**
+ * Precise in-paragraph anchoring (step 2 of the plan doc). The model is
+ * still never asked for a character offset — instead of estimating a
+ * position, it may optionally return a short exact-substring "quote" from
+ * within the paragraph it named. This locates that substring via a plain,
+ * case-sensitive string search SCOPED TO THAT PARAGRAPH'S OWN TEXT ONLY
+ * (never the whole document) via String.indexOf, which is why a
+ * wrong/duplicate match is low-stakes: the search space is a few hundred
+ * characters at most, so a bad match still lands somewhere inside the
+ * right paragraph, never somewhere else in the document. Returns the
+ * paragraph-relative offset of the match, or null if the quote is missing,
+ * blank, or not found — callers fall back to the existing start-of-
+ * paragraph-plus-nudge behaviour in that case (see
+ * resolveParagraphPlacements below), exactly as before this feature
+ * existed.
+ */
+function locateQuoteInParagraph(paragraph: Paragraph, quote: string | undefined): number | null {
+  if (!quote) return null;
+  const trimmed = quote.trim();
+  if (!trimmed) return null;
+  const idx = paragraph.text.indexOf(trimmed);
+  return idx === -1 ? null : idx;
+}
+
+/**
  * The model is never asked for a character offset — it only ever names a
- * paragraphId it saw tagged in the prompt (buildPrompt() below). This
- * resolves that id back to a real charPos the code already knows for that
- * paragraph (a lookup, not a guess). Ported from lib/ai-proxy.js's
+ * paragraphId it saw tagged in the prompt (buildPrompt() below), plus an
+ * optional exact-substring "quote" (see locateQuoteInParagraph above) for
+ * pointing at a specific sentence/phrase within that paragraph. This
+ * resolves both back to a real charPos the code already knows for that
+ * paragraph (a lookup/search, not a guess). Ported from lib/ai-proxy.js's
  * resolveParagraphPlacements. Never throws.
  *
  * MULTIPLE notes per paragraph are allowed (previously the second+ note for
@@ -109,16 +151,19 @@ export function extractJsonArray(raw: string): unknown[] {
  * several distinct notes rather than being forced into one combined,
  * harder-to-read note or having extras thrown away entirely.
  *
- * Every note for the same paragraph currently resolves to the same
- * charPos (paragraph.start) until precise in-paragraph anchoring lands
- * (see the plan doc) — to keep same-paragraph notes from being placed at
- * the exact identical document offset (which the margin layout's
- * from-ordering logic would rather not have to disambiguate), each
- * repeat's charPos is nudged forward by one character per prior note in
- * that same paragraph, clamped to stay inside the paragraph's own range.
- * This is a stable, cheap tie-breaker, not real precision — it only
- * exists so repeats sort in the order the model returned them rather than
- * comparing equal.
+ * Anchoring precedence per placement:
+ *  1. If a "quote" was given AND found inside that paragraph's own text,
+ *     anchor there — this is the precise, per-sentence anchor.
+ *  2. Otherwise (no quote, or quote not found), fall back to the original
+ *     behaviour: paragraph.start, nudged forward by one character per
+ *     prior note already resolved for that same paragraph, clamped to
+ *     stay inside the paragraph's own range. This is a stable, cheap
+ *     tie-breaker, not real precision — it only exists so repeats sort in
+ *     the order the model returned them rather than comparing equal.
+ * The two can mix freely within one paragraph (e.g. two quoted notes and
+ * one unquoted one) — the nudge counter only advances for the fallback
+ * case, so a quoted note never "uses up" a nudge slot an unquoted note
+ * would otherwise need.
  */
 export function resolveParagraphPlacements(
   rawPlacements: unknown[],
@@ -131,7 +176,7 @@ export function resolveParagraphPlacements(
   let rejected = 0;
 
   for (const item of rawPlacements) {
-    const p = item as { paragraphId?: unknown; content?: unknown };
+    const p = item as { paragraphId?: unknown; content?: unknown; quote?: unknown };
     if (!p || typeof p !== 'object') continue;
     const content = typeof p.content === 'string' ? p.content.trim() : '';
     if (!content) continue;
@@ -139,15 +184,23 @@ export function resolveParagraphPlacements(
     const paragraph = byId.get(paragraphId);
     if (!paragraph) continue; // unknown/malformed id — nothing safe to clamp to
 
-    const repeatIndex = seenCounts.get(paragraphId) ?? 0;
-    const paragraphLength = Math.max(0, paragraph.end - paragraph.start);
-    const charPos = paragraph.start + Math.min(repeatIndex, paragraphLength);
+    const quote = typeof p.quote === 'string' ? p.quote : undefined;
+    const quoteOffset = locateQuoteInParagraph(paragraph, quote);
+
+    let charPos: number;
+    if (quoteOffset !== null) {
+      charPos = paragraph.start + quoteOffset;
+    } else {
+      const repeatIndex = seenCounts.get(paragraphId) ?? 0;
+      const paragraphLength = Math.max(0, paragraph.end - paragraph.start);
+      charPos = paragraph.start + Math.min(repeatIndex, paragraphLength);
+      seenCounts.set(paragraphId, repeatIndex + 1);
+    }
 
     if (landsInsideExistingNote(charPos, existingSpans)) {
       rejected++;
       continue;
     }
-    seenCounts.set(paragraphId, repeatIndex + 1);
     out.push({ charPos, content });
   }
   return { placements: out, rejected };
@@ -163,6 +216,78 @@ interface BuiltPrompt {
   paragraphs: Paragraph[];
 }
 
+// Plan §2.5 — spelling convention promoted to a global setting. Only the
+// wording of this one line changes per option; everything else in
+// `instructions` is unaffected. 'auto' keeps the original hardcoded
+// behaviour byte-for-byte (British-unless-clearly-American) so someone who
+// never touches the new setting sees no prompt change at all.
+const SPELLING_LINES: Record<SpellingConvention, string> = {
+  auto:
+    '- Use British spelling and punctuation conventions (e.g. "colour", "centre", "realise", Oxford commas, etc.)\n' +
+    '  unless the text is clearly written in American English, in which case use American conventions.',
+  british:
+    '- Use British spelling and punctuation conventions throughout (e.g. "colour", "centre", "realise",\n' +
+    '  Oxford commas, etc.), regardless of which convention the text itself uses.',
+  american:
+    '- Use American spelling and punctuation conventions throughout (e.g. "color", "center", "realize", no\n' +
+    '  Oxford commas unless needed for clarity, etc.), regardless of which convention the text itself uses.',
+};
+
+// Plan §2.5 — note density posture promoted to a global setting. This
+// swaps in a different version of the density paragraph rather than
+// exposing a free-text override, since a person picking "how aggressive
+// should this be" from three labelled options can't accidentally break
+// the JSON-shape contract the way a freeform prompt edit could. 'balanced'
+// is the original hardcoded paragraph byte-for-byte, so it stays the
+// default and existing behaviour is unchanged unless someone opts into a
+// different posture.
+const DENSITY_PARAGRAPHS: Record<DensityPosture, string> = {
+  conservative:
+    "Density \u2014 this is the most important rule and overrides your own sense\n" +
+    'of thoroughness. Default to saying LESS:\n' +
+    '- Flag only issues you are confident meaningfully hurt the text \u2014 skip anything\n' +
+    '  minor, subjective, or debatable. When in doubt, leave it unflagged.\n' +
+    '- Most paragraphs, even in an imperfect draft, should get no note at all. A note\n' +
+    '  next to every few paragraphs is already a lot \u2014 do not aim for coverage.\n' +
+    "- Only flag a paragraph if fixing what you'd note would meaningfully improve the\n" +
+    '  text. If you are unsure whether an issue is worth a note, leave it unflagged.\n' +
+    '- If the same kind of issue (e.g. a repeated crutch word) occurs in many\n' +
+    '  paragraphs, do not give each one its own note. Note it once, on its first or\n' +
+    '  most representative paragraph, and cite the OTHER paragraph IDs where it\n' +
+    '  recurs by their actual "Pn" tags, not a vague count (e.g. "\'suddenly\' also\n' +
+    '  appears in P7, P12, and P19" \u2014 not "appears 6 times in this text").',
+  balanced:
+    "Density \u2014 this is the most important rule and overrides your own sense\n" +
+    'of thoroughness:\n' +
+    '- Do not flag every paragraph. A margin note next to every paragraph is\n' +
+    '  not useful to the person reading it \u2014 it is clutter they have to read\n' +
+    '  past. Most paragraphs in a clean text should get no note at all.\n' +
+    "- Only flag a paragraph if fixing what you'd note would meaningfully\n" +
+    '  improve the text. If you are unsure whether an issue is worth a note,\n' +
+    '  leave it unflagged.\n' +
+    '- If the same kind of issue (e.g. a repeated crutch word) occurs in\n' +
+    '  many paragraphs, do not give each one its own note. Note it once, on\n' +
+    '  its first or most representative paragraph, and cite the OTHER\n' +
+    '  paragraph IDs where it recurs by their actual "Pn" tags, not a vague\n' +
+    '  count (e.g. "\'suddenly\' also appears in P7, P12, and P19" \u2014 not\n' +
+    '  "appears 6 times in this text").',
+  thorough:
+    "Density \u2014 this is the most important rule, but for THIS run thoroughness is\n" +
+    'explicitly wanted, so err toward flagging more rather than less:\n' +
+    '- A genuinely clean paragraph still gets no note \u2014 do not pad the count or\n' +
+    '  invent issues that are not really there.\n' +
+    '- But do not stay silent on real, fixable issues just because they are minor.\n' +
+    '  If it is worth a line-edit\u2019s attention, it is worth a note.\n' +
+    '- A paragraph with several distinct issues should get several distinct notes\n' +
+    '  (see the multi-note rule above) \u2014 do not compress them into one to keep the\n' +
+    '  count down.\n' +
+    '- If the same kind of issue (e.g. a repeated crutch word) occurs in many\n' +
+    '  paragraphs, do not give each one its own note. Note it once, on its first or\n' +
+    '  most representative paragraph, and cite the OTHER paragraph IDs where it\n' +
+    '  recurs by their actual "Pn" tags, not a vague count (e.g. "\'suddenly\' also\n' +
+    '  appears in P7, P12, and P19" \u2014 not "appears 6 times in this text").',
+};
+
 /**
  * Ported from lib/ai-proxy.js's buildPrompt. Splits `text` into paragraphs,
  * shows the model each one tagged "[Pn]", and instructs it to name a
@@ -171,8 +296,14 @@ interface BuiltPrompt {
  * characters; they can recognize which paragraph they're looking at).
  * Says "text" throughout, not "chapter" — this runs for a whole file, a
  * selection, or a vault-wide pass, and the vault isn't always fiction.
+ *
+ * `options` (plan §2.5) templates in the two settings promoted out of this
+ * previously-hardcoded block: which spelling line to use, and which
+ * version of the density paragraph to use. Everything else in
+ * `instructions` below stays fixed — see SPELLING_LINES/DENSITY_PARAGRAPHS
+ * doc comments for why only these two are settings and the rest aren't.
  */
-function buildPrompt(agentProfilePrompt: string, text: string): BuiltPrompt {
+function buildPrompt(agentProfilePrompt: string, text: string, options: PromptOptions): BuiltPrompt {
   const paragraphs = splitIntoParagraphs(text);
 
   // Strips markers only from the copy shown to the model — paragraphs[].start
@@ -197,13 +328,20 @@ function buildPrompt(agentProfilePrompt: string, text: string): BuiltPrompt {
     'Decide which paragraphs need a note and what each should say. Respond',
     'with ONLY a JSON array, no prose before or after it, no markdown code',
     'fence, in exactly this shape:',
-    '[{"paragraphId": "<the P-number of the paragraph, exactly as tagged, e.g. \\"P3\\">", "content": "<note text>"}]',
+    '[{"paragraphId": "<the P-number of the paragraph, exactly as tagged, e.g. \\"P3\\">", "content": "<note text>", "quote": "<optional short exact substring>"}]',
     '',
     'Rules:',
     '- paragraphId must be copied exactly from one of the "[Pn]" tags shown',
-    '  \u2014 do not invent an id, and do not try to point at a specific word,',
-    '  sentence, or character within the paragraph; a note always applies',
-    '  to the whole paragraph it is tagged with.',
+    '  \u2014 do not invent an id.',
+    '- "quote" is OPTIONAL. When the issue is about a specific sentence or',
+    '  phrase rather than the whole paragraph, include a short EXACT',
+    '  substring (a few words, copied character-for-character from that',
+    '  paragraph\u2019s text, not paraphrased or retyped from memory) so the',
+    '  note can be anchored right next to what it is about. Omit "quote"',
+    '  entirely if the note is about the paragraph as a whole \u2014 do not',
+    '  invent a quote just to fill the field. Never count characters or',
+    '  guess a position yourself; "quote" is text to be located, not an',
+    '  offset.',
     '- A paragraph MAY get more than one note if it genuinely has more than',
     '  one DISTINCT issue worth flagging \u2014 return a separate entry per',
     '  issue (same paragraphId, different content) rather than combining',
@@ -218,22 +356,8 @@ function buildPrompt(agentProfilePrompt: string, text: string): BuiltPrompt {
     '- Return an empty array [] if no notes are warranted.',
     '- Do not include any text outside the JSON array.',
     '',
-    "Density \u2014 this is the most important rule and overrides your own sense",
-    'of thoroughness:',
-    '- Do not flag every paragraph. A margin note next to every paragraph is',
-    '  not useful to the person reading it \u2014 it is clutter they have to read',
-    '  past. Most paragraphs in a clean text should get no note at all.',
-    "- Only flag a paragraph if fixing what you'd note would meaningfully",
-    '  improve the text. If you are unsure whether an issue is worth a note,',
-    '  leave it unflagged.',
-    '- If the same kind of issue (e.g. a repeated crutch word) occurs in',
-    '  many paragraphs, do not give each one its own note. Note it once, on',
-    '  its first or most representative paragraph, and cite the OTHER',
-    '  paragraph IDs where it recurs by their actual "Pn" tags, not a vague',
-    '  count (e.g. "\'suddenly\' also appears in P7, P12, and P19" \u2014 not',
-    '  "appears 6 times in this text").',
-    '- Use British spelling and punctuation conventions (e.g. "colour", "centre", "realise", Oxford commas, etc.)',
-    '  unless the text is clearly written in American English, in which case use American conventions.',
+    DENSITY_PARAGRAPHS[options.density],
+    SPELLING_LINES[options.spelling],
   ].join('\n');
 
   const behaviour = (agentProfilePrompt || '').trim();
@@ -283,10 +407,20 @@ export interface ChatResult {
   capped: number;
 }
 
+// Matches buildPrompt's original hardcoded behaviour byte-for-byte — the
+// default so a settings object that predates this feature (or a caller
+// that doesn't care) reproduces exactly what shipped before plan §2.5.
+export const DEFAULT_PROMPT_OPTIONS: PromptOptions = { spelling: 'auto', density: 'balanced' };
+
 /** End-to-end: prompt-build -> provider call -> parse -> resolve -> density cap. Mirrors lib/ai-proxy.js's chat(). */
-export async function runAgentChat(cfg: ProviderConfig, agentProfilePrompt: string, text: string): Promise<ChatResult> {
+export async function runAgentChat(
+  cfg: ProviderConfig,
+  agentProfilePrompt: string,
+  text: string,
+  promptOptions: PromptOptions = DEFAULT_PROMPT_OPTIONS
+): Promise<ChatResult> {
   if (!text.trim()) throw new Error('No text provided.');
-  const { fullSystem, userMessage, paragraphs } = buildPrompt(agentProfilePrompt, text);
+  const { fullSystem, userMessage, paragraphs } = buildPrompt(agentProfilePrompt, text, promptOptions);
   const rawText = await callAgentProvider(cfg, fullSystem, userMessage);
   const rawPlacements = extractJsonArray(rawText);
   const existingSpans = findExistingNoteSpans(text);

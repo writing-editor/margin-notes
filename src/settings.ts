@@ -1,7 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type MarginNotesPlugin from './main';
 import { decryptSecret, encryptSecret, secretStorageDescription } from './secureStorage';
-import { AGENT_PROVIDERS, AgentProvider, listAgentNames } from './agents';
+import { AGENT_PROVIDERS, AgentProvider, DensityPosture, SpellingConvention, listAgentNames } from './agents';
 
 export type TriggerMode = 'frontmatter' | 'folder' | 'all';
 export type AgentScope = 'file' | 'selection' | 'vault';
@@ -55,6 +55,15 @@ export interface MarginNotesSettings {
    */
   disableChipsOnMobile: boolean;
   agent: AgentSettings;
+  /**
+   * Plan §2.5 — genuine style/behaviour preferences promoted out of the
+   * previously-hardcoded prompt block, kept at the TOP LEVEL (not nested
+   * under `agent`) because they're cross-cutting: they apply no matter
+   * which agent profile is running, so a per-agent markdown file in
+   * `agentsFolder` doesn't need to restate them.
+   */
+  spelling: SpellingConvention;
+  density: DensityPosture;
   /** Values here are already run through encryptSecret() — never plaintext at rest when a keychain is available. */
   secrets: SecretSettings;
 }
@@ -85,6 +94,11 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
     selectedAgent: 'Continuity checker',
     scope: 'file',
   },
+  // Matches the original hardcoded prompt wording byte-for-byte (see
+  // agents.ts's DEFAULT_PROMPT_OPTIONS) — a fresh install or a settings
+  // file that predates plan §2.5 behaves exactly as before.
+  spelling: 'auto',
+  density: 'balanced',
   secrets: {
     claudeKey: '',
     openaiKey: '',
@@ -230,6 +244,39 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         'Every insertion is checked after the fact to confirm that held.',
       cls: 'setting-item-description',
     });
+
+    new Setting(containerEl)
+      .setName('Spelling convention')
+      .setDesc('Applies to every agent run, regardless of which profile is selected.')
+      .addDropdown((dd) =>
+        dd
+          .addOption('auto', 'Auto-detect (British unless text is clearly American)')
+          .addOption('british', 'British')
+          .addOption('american', 'American')
+          .setValue(s.spelling)
+          .onChange(async (value) => {
+            s.spelling = value as SpellingConvention;
+            await this.save();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Note density')
+      .setDesc(
+        'How aggressively the agent flags issues, regardless of which profile is selected. Conservative for a ' +
+          'near-final polish pass, Thorough for an early structural read.'
+      )
+      .addDropdown((dd) =>
+        dd
+          .addOption('conservative', 'Conservative')
+          .addOption('balanced', 'Balanced')
+          .addOption('thorough', 'Thorough')
+          .setValue(s.density)
+          .onChange(async (value) => {
+            s.density = value as DensityPosture;
+            await this.save();
+          })
+      );
 
     new Setting(containerEl)
       .setName('Provider')

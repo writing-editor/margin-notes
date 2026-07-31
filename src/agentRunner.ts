@@ -1,6 +1,6 @@
 import { App, MarkdownView, Notice, TFile } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
-import { AGENT_PROVIDERS, Placement, loadAgentPrompt, runAgentChat, spliceIntoRawText, verifyInsertOnly } from './agents';
+import { AGENT_PROVIDERS, Placement, PromptOptions, loadAgentPrompt, runAgentChat, spliceIntoRawText, verifyInsertOnly } from './agents';
 import { insertAiNotes } from './marginPanel';
 import { decryptSecret } from './secureStorage';
 import { isMarginNotesEnabled } from './runtime';
@@ -22,12 +22,19 @@ function providerConfig(settings: MarginNotesSettings) {
   };
 }
 
+// Plan §2.5 — the two global prompt settings, read fresh each run so a
+// change in the settings tab takes effect on the very next "Run agent
+// now" without needing a reload.
+function promptOptions(settings: MarginNotesSettings): PromptOptions {
+  return { spelling: settings.spelling, density: settings.density };
+}
+
 /** Whole-file run: text comes from the live editor if the file is open, otherwise the Vault API. */
 async function runOnFile(app: App, settings: MarginNotesSettings, file: TFile, agentPrompt: string): Promise<{ added: number; rejected: number; capped: number }> {
   const cmView = getCM6View(app, file);
   const before = cmView ? cmView.state.doc.toString() : await app.vault.read(file);
 
-  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, before);
+  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, before, promptOptions(settings));
   if (placements.length === 0) return { added: 0, rejected, capped };
 
   if (cmView) {
@@ -54,7 +61,7 @@ async function runOnSelection(app: App, settings: MarginNotesSettings, file: TFi
   const before = cmView.state.doc.toString();
   const selectedText = before.slice(sel.from, sel.to);
 
-  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, selectedText);
+  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, selectedText, promptOptions(settings));
   if (placements.length === 0) return { added: 0, rejected, capped };
 
   // Shift every placement from "offset into the selected substring" to
