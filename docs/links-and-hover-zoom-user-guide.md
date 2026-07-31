@@ -1,13 +1,17 @@
-# Margin Notes — Links, Embeds & Hover-Zoom: user guide
+# Margin Notes — Links & Hover-Zoom: user guide
 
 This covers the two features added on top of the base `[mn: ...]` margin
-notes: **links/embeds previewed in the margin**, and **hover-zoom** on every
+notes: **`[[links]]` previewed in the margin**, and **hover-zoom** on every
 margin chip. For the original note-taking feature, see the main README.
 
-## Writing a link or embed
+`![[embeds]]` are NOT part of this — this plugin leaves embeds entirely to
+Obsidian's own built-in rendering. See "Why not embeds?" at the bottom if
+you're curious why.
 
-Just write normal Obsidian wikilink syntax anywhere in a file with margin
-notes turned on:
+## Writing a link
+
+Just write a normal Obsidian wikilink anywhere in a file with margin notes
+turned on:
 
 | You type | What shows in the text | What shows in the margin |
 |---|---|---|
@@ -15,34 +19,28 @@ notes turned on:
 | `[[Character Bible\|Alice]]` | Alice (plain, underlined text) | a **link** chip, live preview |
 | `[[Character Bible#Alice]]` | Character Bible | same, jumps to that heading on click |
 | `[[Character Bible#Alice\|Alice's Heading]]` | Alice's Heading | same |
-| `![[Character Bible]]` | *Obsidian's own inline embed* — the note's content appears embedded right in the text, same as it always does | an **embed** chip, live preview |
-| `![[Character Bible#Alice]]` | same, scoped to that heading | same, scoped to that heading |
 
 Notes:
-- `[[links]]` render as clean plain text — no brackets, underlined in a
-  muted accent color so it still reads as a link, just not shouting-blue
-  like Obsidian's default.
-- `![[embeds]]` are left alone in the main text — Obsidian already renders
-  these as an inline embedded block natively, and this plugin doesn't
-  change that. What this plugin *adds* for embeds is the margin chip
-  preview next to them; the inline behavior in the text itself is
-  unchanged, ordinary Obsidian.
+- Links render as clean plain text — no brackets — underlined in a muted
+  accent color so it still reads as a link, just not shouting-blue like
+  Obsidian's default.
 - Click the text (or the margin chip) to jump to that note. If the note
   doesn't exist yet, Obsidian will offer to create it — same as clicking
   any normal `[[link]]` in Obsidian.
 - Put your cursor inside a `[[...]]` and it reveals the raw brackets/syntax
   so you can edit it — moving the cursor away collapses it back to plain
-  text. (This reveal-on-cursor behavior is specific to `[[links]]`; `![[embeds]]`
-  follow Obsidian's own normal reveal-on-cursor behavior for embeds.)
+  text.
+- **A `[[link]]` written inside an `[mn: ...]` note's own text is treated
+  as part of that note**, not as a separate link. It won't get its own
+  underline or its own margin chip — it stays as ordinary text within the
+  note, and you can see/edit the raw `[[...]]` by clicking into the note
+  the normal way. This keeps a note's content from being silently cut off
+  partway through if you happen to reference another note inside it.
 
 ## Reading the margin chip
 
-Each chip has a small label in the top-left corner:
-
-- **`link`** — from a `[[...]]` reference.
-- **`embed`** — from a `![[...]]` reference.
-- A colored left edge distinguishes the two at a glance (and both are a
-  different color from ordinary `mn:` note chips).
+Each link chip has a small `link` label in the top-left corner, with a
+colored left edge distinguishing it from `mn:` note chips.
 
 The chip's body shows a live preview of the target note's actual content,
 rendered the same way Obsidian renders any note. Three possible states:
@@ -55,18 +53,22 @@ rendered the same way Obsidian renders any note. Three possible states:
 3. **Not found** — if the target note doesn't exist, the chip shows a
    dashed border and muted italic text: `No note titled "..." yet`. This
    is not an error — it just means nothing to preview yet. Clicking it will
-   offer to create the note.
+   offer to create the note. If you then create that note, the chip
+   corrects itself to a real preview automatically.
 
 If you edit the target note elsewhere while its chip is visible, the chip's
 preview updates on its own the next time you save that note — no need to
-reopen or manually refresh the file with the chip in it.
+reopen or manually refresh the file with the chip in it. This also works
+correctly when the SAME note is linked from several places in one
+document — every chip pointing at it gets its own independent, correctly
+updating preview.
 
 ## Hover-zoom
 
-Hover your mouse over **any** margin chip — a note, a link, or an embed —
-and it grows slightly and lifts with a soft shadow, showing its full
-content even if it was too tall to fit in its normal spot. Move the mouse
-away and it settles back.
+Hover your mouse over **any** margin chip — a note or a link — and it
+grows slightly and lifts with a soft shadow, showing its full content even
+if it was too tall to fit in its normal spot. Move the mouse away and it
+settles back.
 
 - This is purely visual — it never moves your cursor, changes your
   selection, or does anything to the document itself.
@@ -75,6 +77,31 @@ away and it settles back.
   reveal still gets the same little lift, just for visual consistency.
 - The zoomed chip always grows toward the margin, never toward your text.
   It won't cover your writing.
+
+## Narrow panes and mobile
+
+The margin chip column needs some real horizontal room to be useful. When
+there isn't enough:
+
+- **Split panes.** If you split your editor into two (or more) notes side
+  by side, whichever pane gets too narrow automatically hides its chip
+  column and gives that space back to your prose. This is controlled by a
+  ratio in settings ("Hide chips in narrow panes," 3.0x by default) rather
+  than a fixed size — chips hide once the pane gets narrower than that many
+  times your margin width, so it automatically stays sensible even if you
+  change the margin width elsewhere in settings. Set it to 0 to always show
+  chips no matter how narrow the pane gets.
+- **Mobile.** On Obsidian Mobile (phones — tablets are unaffected and keep
+  the normal desktop-style layout), chips are off by default. There's a
+  toggle for this in settings ("Hide chips on mobile") if you'd rather keep
+  them on.
+
+**Important: superscript note numbers and underlined link text keep
+working exactly as normal in both of these cases.** Only the chip column
+itself — the thing that needs the extra horizontal space — hides. You
+don't lose the ability to see which sentences have notes/links, or to
+click through to them; you just don't get the live margin preview until
+there's room for it again.
 
 ## Tips
 
@@ -87,8 +114,22 @@ away and it settles back.
 - Nothing about this changes how `[mn: ...]` notes themselves work — this
   is purely additive.
 
+## Why not embeds?
+
+An earlier version of this feature also tried to give `![[embeds]]` the
+same treatment (margin chip + preview). It was removed: Obsidian already
+renders `![[...]]` as a live embedded block right in the text where you
+write it — that already IS a live preview, in place. Adding a second,
+separate preview in the margin on top of that just meant seeing the same
+content twice for no real benefit, plus it fought with Obsidian's own
+rendering internally in ways that caused inconsistent bugs. Links don't
+have that overlap — Obsidian leaves `[[links]]` as plain clickable text
+with no inline preview at all, which is exactly the gap this plugin's
+margin chip fills. So links get full treatment; embeds are left entirely
+to Obsidian, unmodified.
+
 ---
 
-*A future version may turn this into buttons/menu commands (e.g. "Insert
-link" the same way "Insert margin note" already exists) rather than typing
-raw `[[...]]`/`![[...]]` syntax by hand — not implemented yet.*
+*A future version may turn link insertion into a button/menu command (the
+same way "Insert margin note" already exists) rather than typing raw
+`[[...]]` syntax by hand — not implemented yet.*

@@ -3,8 +3,8 @@ import { EditorView } from '@codemirror/view';
 export const CHIP_GAP = 6;
 
 /**
- * Generic shape any margin item (note chip, link/embed chip, or any future
- * kind) must satisfy to go through the shared two-pass layout below. Kept
+ * Generic shape any margin item (note chip, link chip, or any future kind)
+ * must satisfy to go through the shared two-pass layout below. Kept
  * deliberately minimal — the layout pass only needs to know where an item
  * anchors in the document and how to build its chip DOM; it does not care
  * what kind of marker produced it.

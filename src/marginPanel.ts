@@ -83,11 +83,11 @@ class MarginColumn {
     // (CM6 observes its own DOM element's size internally and sets its
     // Geometry flag on change), but that's an internal implementation
     // detail we don't want this feature silently depending on. Observing
-    // scrollDOM directly here guarantees a resize below/above
-    // narrowPaneThreshold always triggers a re-render and correctly
-    // shows/hides the chip column, regardless of whether CM6's own flag
-    // happens to fire for a given resize path (e.g. resizing without any
-    // accompanying doc/selection/viewport change).
+    // scrollDOM directly here guarantees a resize across the
+    // marginWidth * narrowPaneRatio boundary always triggers a re-render
+    // and correctly shows/hides the chip column, regardless of whether
+    // CM6's own flag happens to fire for a given resize path (e.g.
+    // resizing without any accompanying doc/selection/viewport change).
     this.resizeObserver = new ResizeObserver(() => this.schedule());
     this.resizeObserver.observe(view.scrollDOM);
     this.schedule();
@@ -126,12 +126,15 @@ class MarginColumn {
     // rendered width of THIS editor pane specifically — reading it here
     // (rather than window.innerWidth) is what makes a split-pane layout
     // correctly narrow just the half that's actually narrow, without
-    // affecting a sibling pane that still has room. threshold <= 0 means
-    // "never hide for width" (see settings.ts's doc comment on
-    // narrowPaneThreshold).
-    const threshold = runtime.settings.narrowPaneThreshold;
+    // affecting a sibling pane that still has room. This compares against
+    // marginWidth * narrowPaneRatio rather than a fixed pixel number, so
+    // the threshold scales correctly with whatever marginWidth the user
+    // has actually configured (see settings.ts's doc comment on
+    // narrowPaneRatio for why a fixed number doesn't work well here).
+    // ratio <= 0 means "never hide for width".
+    const ratio = runtime.settings.narrowPaneRatio;
     const paneWidth = this.view.scrollDOM.clientWidth;
-    const paneTooNarrow = threshold > 0 && paneWidth < threshold;
+    const paneTooNarrow = ratio > 0 && paneWidth < runtime.settings.marginWidth * ratio;
 
     const chipsAllowed = enabled && !mobileBlocked && !paneTooNarrow;
 

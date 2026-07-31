@@ -6,7 +6,10 @@ import { noteTypeColor } from './noteTypes';
 
 // Same regex and same sequential (1-based, order-of-appearance) numbering
 // scheme as the original app's lib/parse.js / editor-src/noteWidgets.js, so
-// anyone moving a vault between the two apps sees identical note ids.
+// anyone moving a vault between the two apps sees identical note ids. NOT
+// changed to fix the nesting bug below — see findNoteMarkers() instead,
+// which corrects the match's end position after the fact rather than
+// touching this regex's format-compatibility contract.
 export const MN_RE = /\[mn(?:\.(\w+))?\s*:\s*([\s\S]*?)\]/g;
 
 export interface NoteMarker {
@@ -25,6 +28,49 @@ export interface NoteMarker {
 // the hook for every other case.
 export const forceMarginRefresh = StateEffect.define<null>();
 
+/**
+ * MN_RE's content group is non-greedy ([\s\S]*?), so it naturally stops at
+ * the FIRST `]` after the colon. That's correct for a plain note, but
+ * breaks the moment a note's content contains its own bracketed construct
+ * with a single closing bracket inside it — most commonly a [[link]]
+ * written inside a note, e.g. `[mn: see [[Character Bible]] for context]`.
+ * The naive match stops at the link's own `]]`'s first `]`, truncating the
+ * note to `"see [[Character Bible"` and leaving `] for context]` as stray
+ * visible text after it.
+ *
+ * This scans forward from just after the note's opening `:` tracking
+ * `[[`/`]]` bracket-pair depth, and returns the position of the note's
+ * TRUE closing `]` — the first single `]` encountered while depth is 0.
+ * Only called when the naive match's content contains more `[[` than `]]`
+ * (an unbalanced-looking capture, i.e. exactly the truncation symptom) —
+ * a normal note with no nested double-brackets is completely unaffected
+ * and returns the naive match's own end unchanged.
+ */
+function findTrueNoteEnd(text: string, naiveMatchIndex: number, naiveMatchEnd: number, capturedContent: string): number {
+  const opens = (capturedContent.match(/\[\[/g) || []).length;
+  const closes = (capturedContent.match(/\]\]/g) || []).length;
+  if (opens <= closes) return naiveMatchEnd; // balanced — naive match is already correct
+
+  const colonIdx = text.indexOf(':', naiveMatchIndex);
+  let depth = 0;
+  for (let i = colonIdx + 1; i < text.length; i++) {
+    if (text[i] === '[' && text[i + 1] === '[') {
+      depth++;
+      i++; // consume both characters of the pair
+      continue;
+    }
+    if (text[i] === ']' && text[i + 1] === ']' && depth > 0) {
+      depth--;
+      i++;
+      continue;
+    }
+    if (text[i] === ']' && depth === 0) {
+      return i + 1; // the note's real closing bracket
+    }
+  }
+  return naiveMatchEnd; // unterminated note (shouldn't normally happen) — fall back rather than throw
+}
+
 export function findNoteMarkers(doc: EditorState['doc']): NoteMarker[] {
   const text = doc.toString();
   const markers: NoteMarker[] = [];
@@ -33,12 +79,25 @@ export function findNoteMarkers(doc: EditorState['doc']): NoteMarker[] {
   MN_RE.lastIndex = 0;
   while ((match = MN_RE.exec(text))) {
     id++;
+    const naiveEnd = match.index + match[0].length;
+    const trueEnd = findTrueNoteEnd(text, match.index, naiveEnd, match[2]);
+    let content = match[2];
+    if (trueEnd !== naiveEnd) {
+      const colonIdx = text.indexOf(':', match.index);
+      content = text.slice(colonIdx + 1, trueEnd - 1);
+      // Resume MN_RE's own scan AFTER the note's true end, not the naive
+      // (too-short) one — otherwise the regex's own next .exec() call
+      // would re-enter the note's remaining text and could spuriously
+      // match a SECOND, bogus "note" starting mid-way through content
+      // that's actually still part of this same note.
+      MN_RE.lastIndex = trueEnd;
+    }
     markers.push({
       from: match.index,
-      to: match.index + match[0].length,
+      to: trueEnd,
       id,
       type: match[1] || null,
-      content: match[2].trim(),
+      content: content.trim(),
     });
   }
   return markers;

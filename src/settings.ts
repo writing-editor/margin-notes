@@ -30,17 +30,22 @@ export interface MarginNotesSettings {
   folderPath: string;
   marginWidth: number;
   /**
-   * Below this editor-pane width (in pixels), the margin chip column hides
-   * itself entirely — the pane is too narrow to reserve marginWidth px for
-   * chips without squeezing the actual prose uncomfortably. This is the
-   * PANE's width, not the window's — opening two notes side-by-side (a
-   * split view) makes each pane narrower without changing the window, and
-   * this setting is what catches that case. Note-superscript numbers and
-   * underlined link text keep rendering as normal — only the chip column
-   * itself hides. 0 disables this check entirely (chips always show,
-   * however narrow the pane gets).
+   * The margin chip column hides itself entirely once the editor pane's own
+   * width drops below `marginWidth * narrowPaneRatio` — i.e. this is a
+   * RATIO against the user's own configured margin width, not a fixed
+   * pixel number. That matters because a fixed pixel threshold doesn't
+   * scale with marginWidth: someone running a 360px margin needs a much
+   * wider pane before chips stop feeling cramped than someone running a
+   * 140px margin does, and a single fixed number can't be right for both.
+   * A ratio stays proportionally correct across the whole marginWidth
+   * range automatically. This is the PANE's width, not the window's —
+   * opening two notes side-by-side (a split view) makes each pane
+   * narrower without changing the window, and this setting is what catches
+   * that case. Note-superscript numbers and underlined link text keep
+   * rendering as normal — only the chip column itself hides. 0 disables
+   * this check entirely (chips always show, however narrow the pane gets).
    */
-  narrowPaneThreshold: number;
+  narrowPaneRatio: number;
   /**
    * When true, the margin chip column never renders on Obsidian Mobile
    * (phones specifically — Platform.isMobile; tablets get Obsidian's
@@ -60,11 +65,12 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
   frontmatterKey: 'margin-notes',
   folderPath: 'book',
   marginWidth: 220,
-  // Below this pane width, chips hide (see interface doc comment). 700px is
-  // roughly "a single note pane on a 13" laptop split into two side by
-  // side" — narrower than that and marginWidth (default 220) starts eating
-  // a genuinely uncomfortable fraction of the remaining prose width.
-  narrowPaneThreshold: 700,
+  // Chips hide once the pane is narrower than marginWidth * this ratio (see
+  // interface doc comment). 3.0 means: once the pane is less than 3x the
+  // margin's own width, chips hide — at marginWidth's default of 220px
+  // that's ~660px, close to the old fixed 700px default, but now it scales
+  // correctly if the user changes marginWidth instead of staying fixed.
+  narrowPaneRatio: 3.0,
   disableChipsOnMobile: true,
   agent: {
     provider: 'claude',
@@ -171,7 +177,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setDesc('Space (in pixels) reserved on the right for note chips.')
       .addSlider((slider) =>
         slider
-          .setLimits(200, 460, 10)
+          .setLimits(140, 360, 10)
           .setValue(s.marginWidth)
           .setDynamicTooltip()
           .onChange(async (value) => {
@@ -184,17 +190,18 @@ export class MarginNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Hide chips in narrow panes')
       .setDesc(
-        'Below this pane width, the margin chip column hides itself (e.g. when you split the ' +
-          'editor into two notes side by side). Superscript note numbers and underlined links keep ' +
-          'working as normal — only the chip column hides. Set to 0 to never hide chips.'
+        'Chips hide once the pane gets narrower than this many times your margin width — e.g. at 3.0x ' +
+          'and a 220px margin, chips hide below ~660px. Scales automatically if you change the margin ' +
+          'width above. Superscript note numbers and underlined links keep working as normal — only the ' +
+          'chip column hides. Set to 0 to never hide chips.'
       )
       .addSlider((slider) =>
         slider
-          .setLimits(0, 1000, 10)
-          .setValue(s.narrowPaneThreshold)
+          .setLimits(0, 6, 0.1)
+          .setValue(s.narrowPaneRatio)
           .setDynamicTooltip()
           .onChange(async (value) => {
-            s.narrowPaneThreshold = value;
+            s.narrowPaneRatio = value;
             await this.save();
             this.plugin.refreshAllEditors();
           })

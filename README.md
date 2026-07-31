@@ -18,15 +18,15 @@ styles.css              — margin layout, chip styling, note-sheet modal
 src/
   main.ts                — plugin entry: settings, commands, refresh hooks
   runtime.ts              — settings singleton + isMarginNotesEnabled()
-  settings.ts             — settings shape + settings tab UI (notes/agent)
+  settings.ts             — settings shape + settings tab UI (notes/links/agent)
   secureStorage.ts        — OS-keychain-backed secret storage (falls back to plaintext, honestly)
   paragraphs.ts           — the one shared "what is a paragraph" definition (ported from lib/paragraphs.js)
   noteMarkers.ts          — ported from noteWidgets.js: [mn: ...] → superscript widget
-  linkMarkers.ts          — [[link]]/![[embed]] → plain clickable inline text
-  linkPreview.ts          — async resolve/read/render/cache for link & embed margin chips
+  linkMarkers.ts          — [[link]] → plain, underlined clickable inline text (![[embeds]] untouched, left to Obsidian)
+  linkPreview.ts          — async resolve/read/render/cache for link margin chips
   marginLayout.ts         — shared two-pass anchor+clamp layout, generic across chip kinds
-  marginPanel.ts          — the literal margin column: builds note chips and link/embed chips, bulk agent insert
-  noteTypes.ts            — note-type registry (color/label) + link/embed chip accent colors
+  marginPanel.ts          — the literal margin column: builds note chips and link chips, narrow-pane/mobile gate, bulk agent insert
+  noteTypes.ts            — note-type registry (color/label) + link chip accent color
   agents.ts               — provider dispatch, paragraph-ID contract (ported from lib/ai-proxy.js)
   agentRunner.ts          — orchestrates one run across selection/file/vault scope
 ```
@@ -97,45 +97,93 @@ npm run build     # tsc typecheck + esbuild production bundle -> main.js
   OS keychain) when available, plaintext with an explicit on-screen note
   when it isn't (mobile, or a desktop with no keyring backend).
 
-## Links and embeds in the margin
+## Links in the margin
 
 > **For usage instructions, see
 > [`docs/links-and-hover-zoom-user-guide.md`](docs/links-and-hover-zoom-user-guide.md).**
 > The rest of this section is implementation notes for developers.
 
-`[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, `[[Note#Heading|Alias]]`,
-and their `![[...]]` embed equivalents render inline as plain, unstyled
-clickable text (no brackets, no default blue link color) — same visual
-weight as surrounding prose. A margin chip appears next to that line with a
-live-rendered preview of the target note's content, using a distinct accent
-color for links vs. embeds so you can tell the two apart at a glance.
+`[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, and
+`[[Note#Heading|Alias]]` render inline as plain, underlined clickable text
+(no brackets, muted accent color instead of Obsidian's default blue) — same
+visual weight as surrounding prose, just distinguishable enough to notice.
+A margin chip appears next to that line with a live-rendered preview of the
+target note's content.
 
-- **`linkMarkers.ts`** parses the `[[...]]`/`![[...]]` syntax
-  (`target[#heading][|alias]` grammar) and decorates matches with a plain
-  `<span class="mn-linktext">` widget. Clicking it calls Obsidian's own
-  `app.workspace.openLinkText()` — the same link-click behavior Obsidian's
-  built-in renderer uses (handles aliases/headings/creating a missing note
-  the same way).
+`![[embeds]]` are deliberately **not** part of this feature — they were
+tried (parsed, given a margin chip, left to render inline via Obsidian's
+own native embed handling too) and reverted. Obsidian's own Live Preview
+already renders `![[...]]` as a live embedded block right where it's
+written; adding a second, independent margin-chip preview on top of that
+just duplicated the same content for no benefit, and the two decorators
+(this plugin's `Decoration.replace` and Obsidian's own embed rendering)
+fighting over the same character range produced genuinely inconsistent
+bugs — sometimes the chip won, sometimes Obsidian's own embed won, with no
+reliable way to predict which. `[[links]]` don't have that overlap —
+Obsidian leaves them as plain clickable text with nothing rendered inline,
+which is exactly the gap this feature fills — so links get full treatment
+and embeds are left 100% to Obsidian.
+
+- **`linkMarkers.ts`** parses `[[...]]` (`target[#heading][|alias]`
+  grammar) and decorates matches with a plain `<span class="mn-linktext">`
+  widget. Clicking it calls Obsidian's own `app.workspace.openLinkText()` —
+  the same link-click behavior Obsidian's built-in renderer uses. The
+  regex intentionally does NOT use a lookbehind to exclude `![[...]]` —
+  iOS's JS engine doesn't support lookbehind assertions, and using one here
+  would have silently broken every link on iPhone rather than throwing an
+  obvious error. Instead, `findLinkMarkers()` does a manual "was the
+  character right before this preceded by `!`" check against the raw text,
+  which is lookbehind-free and behaves identically.
+- **Nested links inside `[mn: ...]` notes.** A `[[link]]` written inside a
+  note's own content (e.g. `[mn: see [[Character Bible]] for context]`) is
+  swallowed into the note as plain text — it does NOT also get its own
+  underline/margin chip. `findTopLevelLinkMarkers()` (in `linkMarkers.ts`)
+  excludes any link whose range falls inside a note marker's range before
+  either the inline decoration or the margin chip layer ever sees it. This
+  matters for two reasons: (1) two different CM6 extensions each trying to
+  `Decoration.replace` overlapping, nested ranges is not something CM6
+  resolves predictably — avoiding the overlap entirely sidesteps that
+  rather than relying on undefined behavior; (2) `noteMarkers.ts`'s own
+  regex (`MN_RE`) is non-greedy and, on its own, stops at the FIRST `]` it
+  finds after the note's colon — which used to be the nested link's own
+  closing bracket, truncating the note's content and leaving stray bracket
+  characters as broken visible text. `findNoteMarkers()` now includes a
+  bracket-depth-aware rescan (`findTrueNoteEnd()`) that finds the note's
+  real closing bracket whenever its captured content contains an
+  unbalanced `[[` — a plain note with no nested double-brackets is
+  completely unaffected and takes the same fast path as before.
 - **`linkPreview.ts`** owns the async side: resolving the link target via
-  `app.metadataCache.getFirstLinkpathDest()`, reading its content with
-  `app.vault.cachedRead()`, and rendering it via `MarkdownRenderer.render()`
-  into a cache keyed by the resolved file's path (so multiple links to the
-  same note share one render). A broken link shows a distinct "note not
-  found" chip state instead of a blank or throwing chip. The cache
-  invalidates and live-updates open chips when the target file is modified
-  (`vault.on('modify')`), and everything is rendered through one shared,
-  plugin-lifetime `Component` so `MarkdownRenderer`'s own child renderers
-  are cleaned up correctly on unload rather than leaking per re-render.
+  `app.metadataCache.getFirstLinkpathDest()` (re-checked fresh on every
+  call — a link that briefly fails to resolve is never treated as a
+  permanently stable "missing" answer), reading its content with
+  `app.vault.cachedRead()`, and caching the fetched **markdown string**
+  (not a rendered DOM element) keyed by the resolved file's path, so
+  multiple links to the same note share one fetch. Each individual chip
+  then renders its **own independent DOM element** from that shared string
+  via `renderForConsumer()`, with its own `Component` for lifecycle. This
+  replaced an earlier design that cached one shared, already-rendered
+  `HTMLElement` per target and handed it to every chip referencing that
+  file — which was broken, since a DOM node can only ever have one parent:
+  whichever chip called `replaceChildren()` on the shared node last would
+  silently steal it away from every earlier chip pointing at the same
+  note, producing exactly the symptom "the same note linked twice on a
+  page — only one of the two chips ever shows a preview, and which one is
+  order/timing-dependent." A broken link shows a distinct "note not found"
+  chip state instead of a blank or throwing chip, and self-corrects the
+  next time it's checked once the target file exists. The cache
+  invalidates and live-updates every subscribed chip when the target file
+  is modified (`vault.on('modify')`).
 - **`marginLayout.ts`** is the shared positioning/clamping engine both note
-  chips and link/embed chips run through — a generic `MarginItem` interface
+  chips and link chips run through — a generic `MarginItem` interface
   (`{ from, id, buildChip() }`) plus a two-pass "compute every anchor's true
   position first, then place chips top-down clamping only when the *next*
   item's real anchor demands it" layout. `marginPanel.ts` merges note
-  markers and link markers into one document-order list before handing it
-  to this pass, so a note and a link near each other on the page get
-  clamping decisions that correctly account for both as neighbors — not two
-  independently-computed layouts fighting over the same vertical space.
-- **Hover-zoom.** Every margin chip — note or link/embed, clamped or not —
+  markers and (top-level only — see above) link markers into one
+  document-order list before handing it to this pass, so a note and a link
+  near each other on the page get clamping decisions that correctly
+  account for both as neighbors — not two independently-computed layouts
+  fighting over the same vertical space.
+- **Hover-zoom.** Every margin chip — note or link, clamped or not —
   scales up and lifts on `:hover` (pure CSS `transform` + `box-shadow`, no
   JS involved in the motion itself), showing its full unclamped content.
   It's pinned to the margin's own horizontal position
@@ -143,6 +191,39 @@ color for links vs. embeds so you can tell the two apart at a glance.
   layout) so a zoomed chip never grows toward or over the main text — only
   leftward/vertically, within the reserved margin space. This has zero
   effect on the editor's own cursor, selection, or focus.
+- **Narrow-pane / split-view / mobile.** The chip column (built by
+  `marginPanel.ts`'s `MarginColumn`) hides itself — while
+  `noteMarkerField`'s superscripts and `linkMarkerField`'s underlined link
+  text, both independent CM6 `StateField`s, keep rendering completely
+  unaffected — whenever: (a) `Platform.isMobile` is true and the "Hide
+  chips on mobile" setting is on (default: on; phones specifically, not
+  tablets — Obsidian gives tablets the same desktop-style layout), or (b)
+  the editor pane's own rendered width (`view.scrollDOM.clientWidth`, not
+  the window's width — this is what makes a split-pane layout correctly
+  narrow just the pane that's actually narrow) falls below
+  `marginWidth * narrowPaneRatio` (the "Hide chips in narrow panes" setting,
+  default ratio 3.0; 0 disables this check entirely). This is a RATIO
+  against the user's own configured margin width rather than a fixed pixel
+  number, specifically so it scales correctly if the user changes
+  `marginWidth` — a fixed pixel threshold would either feel too aggressive
+  at a narrow `marginWidth` or not aggressive enough at a wide one. A
+  dedicated `ResizeObserver` on the pane's `scrollDOM` guarantees this
+  reacts to a split-pane resize even in edge cases where CM6's own
+  `geometryChanged` update flag might not fire for a given resize path.
+
+## Nested markers, generally
+
+Both marker kinds are designed to resolve overlaps in one direction only,
+to keep the resolution predictable: a `[[link]]`'s range can be nested
+inside an `[mn: ...]` note's range (link-in-note is a normal, supported
+thing to write, and the note simply wins — see above), but an `[mn: ...]`
+note is never expected to be written nested inside a `[[link]]`'s own
+`target`/`heading`/`alias` text (Obsidian's own wikilink syntax doesn't
+have a construct for that, so it isn't a case that comes up in practice).
+If you find a way to construct a genuinely ambiguous nesting beyond
+link-in-note, please file it as a bug — the resolution rule above is
+deliberately the only one implemented, not a general arbitrary-depth
+nesting resolver.
 
 ## Known caveats (read before relying on this)
 
@@ -161,9 +242,10 @@ color for links vs. embeds so you can tell the two apart at a glance.
 the document body, decorated by CodeMirror into a superscript widget +
 margin chip — there's no separate file or footnote involved for these.
 
-`[[links]]` and `![[embeds]]` are the second, link-backed kind mentioned as
-a future direction in earlier drafts of this README — that direction has
-now shipped (see "Links and embeds in the margin" above). Unlike `mn` notes,
-these don't store any content themselves; the margin chip is a live preview
-of whatever the target note currently contains, fetched and cached by
-`linkPreview.ts`.
+`[[links]]` are the second, link-backed kind mentioned as a future
+direction in earlier drafts of this README — that direction has now
+shipped (see "Links in the margin" above). Unlike `mn` notes, links don't
+store any content themselves; the margin chip is a live preview of
+whatever the target note currently contains, fetched and cached by
+`linkPreview.ts`. `![[embeds]]` are intentionally not part of this — see
+above for why.

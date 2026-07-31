@@ -37,8 +37,10 @@
   padding: 0 1px;
 }
 
-/* --- Inline link/embed text (plain-prose rendering of [[...]]/![[...]]) --- */
-/* Originally spec'd as fully color-inherited with only a hover cue, but
+/* --- Inline link text (plain-prose rendering of [[...]]) --- */
+/* Note: ![[embeds]] are never styled here — this plugin doesn't touch
+   embeds' inline appearance at all; Obsidian renders those on its own.
+   Originally spec'd as fully color-inherited with only a hover cue, but
    that reads as indistinguishable from plain prose at rest — too subtle to
    discover. Compromise: a permanent, muted accent color + underline that's
    visibly a link without being Obsidian's loud default blue. Distinct from
@@ -72,6 +74,18 @@
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-normal);
+  /* CRITICAL: without this, max-height below only constrains the CONTENT
+     box — the 2px top+bottom border and 8px top+bottom padding then render
+     ON TOP of that, making every clamped chip ~10px taller on screen than
+     marginLayout.ts's layout math accounted for when it reserved room
+     before the next chip's anchor. That extra height eats directly into
+     CHIP_GAP, and with several clamped chips stacked tightly, compounds
+     until adjacent chips' borders touch or overlap — visually merging
+     into what looks like one continuous block with no separation between
+     them. border-box makes max-height mean "this chip's total rendered
+     height, border and padding included," matching what the layout pass
+     actually reserves space for. */
+  box-sizing: border-box;
   /* Set per-chip from marginPanel.ts to the room actually available before
      the next chip's anchor — "none" when there's no crowding, so an
      isolated chip is never clamped. Chips are laid out top-down in document
@@ -127,7 +141,7 @@
   word-break: break-word;
 }
 
-/* --- Link/embed preview chip body (linkPreview.ts's rendered content) --- */
+/* --- Link preview chip body (linkPreview.ts's rendered content) --- */
 
 .mn-chip-link-body {
   display: block;

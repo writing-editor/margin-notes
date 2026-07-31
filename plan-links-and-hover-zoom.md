@@ -357,15 +357,17 @@
 
 ## Plan status: COMPLETE
 
-All 5 steps in §5's build order are implemented (see checklist above). This
-document is now a historical record of what was built and why, not an
-active TODO — the `README.md` at the repo root has been updated with a
-"Links and embeds in the margin" section describing the shipped feature for
+All 5 steps in §5's build order are implemented (see checklist above), and
+a further amendment beyond the original plan removed embed handling
+entirely — see "Second post-completion amendment" below. This document is
+now a historical record of what was built and why, not an active TODO —
+the `README.md` at the repo root has a "Links in the margin (embeds are
+intentionally left alone)" section describing the shipped feature for
 future readers who don't need the Gotchas/build-order narrative this file
 was written for. Prefer the README for a description of current behavior;
 come back to this file only if you need the historical reasoning behind a
 specific implementation choice (e.g. why `coordsAtPos` over `lineBlockAt`,
-or why one shared `Component` instead of per-entry ones).
+or why embed margin chips were removed).
 
 ### Post-completion amendment: embeds do NOT get a custom inline widget
 
@@ -408,6 +410,39 @@ version-dependent), or (b) accept that showing both an inline embed AND
 suppressing Obsidian's version isn't possible without (a), and instead
 make the margin chip the primary place a clean preview shows, which is
 already what's shipped today.
+
+### Second post-completion amendment: embed handling removed entirely, not just the inline widget
+
+The amendment above still left embeds with a margin chip, an `isEmbed`
+flag, and their own accent color (`EMBED_CHIP_COLOR`) — only the inline
+text replacement had been dropped. **That's since been removed too.**
+Current `linkMarkers.ts` doesn't have an `isEmbed` field at all; its regex
+(`LINK_RE`) only matches `[[...]]`, and `findLinkMarkers()` explicitly skips
+any match preceded by `!` rather than parsing it into a marker with a flag.
+There is no embed margin chip, no `EMBED_CHIP_COLOR` (removed from
+`noteTypes.ts`), and no embed-specific code path anywhere in this feature
+— `![[embeds]]` are 100% Obsidian's native rendering, completely outside
+this plugin's involvement, full stop.
+
+**Why:** once embeds no longer got an inline widget (the first amendment,
+above), the only thing they still got from this plugin was a margin chip
+duplicating content Obsidian was already showing live, inline, in the
+running text. That's not a bug fix at that point, it's a design call: a
+second copy of the same content sitting in the margin next to the one
+already visible in the prose added visual clutter and one more code path
+(with its own accent color, label, and layout-merge participation) for
+zero net benefit over just... not doing that. `[[links]]` justify a margin
+chip because Obsidian gives them nothing extra by default (they're plain
+clickable text with no preview) — that's the actual gap this plugin fills.
+Embeds never had that gap to begin with.
+
+If a future maintainer wants embed margin chips back, treat it as a new
+feature request, not a bug — re-add an `isEmbed`-flagged marker (this
+document's original §2/§2.3 sections above still describe the shape that
+would take), decide whether it's still worth the duplication given
+Obsidian's native embed rendering, and give it its own accent color again
+rather than assuming today's `[[link]]`-only code already has a hook for
+it (it doesn't, on purpose).
 
 ---
 
