@@ -15,6 +15,17 @@ export interface AgentSettings {
   /** Name of the last agent profile used (bundled or from agentsFolder) — remembered across restarts. */
   selectedAgent: string;
   scope: AgentScope;
+  /**
+   * Plan §2 — vault-relative folder AI-authored reports are written to
+   * (see agents.ts's buildReportFilePath/writeOrAppendReport). Separate
+   * from `agentsFolder` on purpose: that folder holds agent PROFILES
+   * (instructions the person writes), this one holds report OUTPUT (files
+   * the agent writes) — mixing outputs into the same folder as profile
+   * definitions would make `listAgentNames`/`loadAgentPrompt` (which
+   * treat every markdown file in `agentsFolder` as a profile) start
+   * treating old reports as selectable agent profiles.
+   */
+  reportsFolder: string;
 }
 
 export interface SecretSettings {
@@ -93,6 +104,7 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
     agentsFolder: 'agents',
     selectedAgent: 'Continuity checker',
     scope: 'file',
+    reportsFolder: 'agents/reports',
   },
   // Matches the original hardcoded prompt wording byte-for-byte (see
   // agents.ts's DEFAULT_PROMPT_OPTIONS) — a fresh install or a settings
@@ -345,6 +357,19 @@ export class MarginNotesSettingTab extends PluginSettingTab {
           s.agent.agentsFolder = value.trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.agent.agentsFolder;
           await this.save();
           this.render();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Reports folder')
+      .setDesc(
+        'Vault-relative. Where the agent writes AI-authored report notes (e.g. a continuity report spanning ' +
+          'the whole text) — separate from the agent profiles folder above, which holds instructions, not output.'
+      )
+      .addText((text) =>
+        text.setValue(s.agent.reportsFolder).onChange(async (value) => {
+          s.agent.reportsFolder = value.trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.agent.reportsFolder;
+          await this.save();
         })
       );
 

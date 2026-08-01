@@ -7,6 +7,8 @@ import { findTopLevelLinkMarkers, linkDisplayText, LinkMarker } from './linkMark
 import { getLinkPreview, renderForConsumer } from './linkPreview';
 import { noteTypeColor, LINK_CHIP_COLOR } from './noteTypes';
 import { MarginItem, layoutMarginItems } from './marginLayout';
+import type { Placement } from './agents';
+import { renderPlacementText } from './agents';
 
 /**
  * Small trash-can icon (not an "×") for the per-chip delete button — an "×"
@@ -85,10 +87,22 @@ export function insertNoteAt(view: EditorView, pos: number, type: string | null,
  * the position of one already placed above it — the shift only propagates
  * to positions greater than the insertion point, and we've already handled
  * those. Used by the agent runner to land several notes in one file.
+ *
+ * Plan §2 — a `kind: 'report'` placement inserts a plain `[[link]]`
+ * (already-built text, via `reportLinkTexts`, keyed by charPos) instead of
+ * an `[mn.ai: ...]` marker — see renderPlacementText's and
+ * buildReportLinkText's doc comments in agents.ts for why. Dispatched as
+ * one plain string insert exactly like insertNoteAt's own marker string;
+ * CodeMirror doesn't need to know it happens to contain `[[...]]`
+ * syntax — Obsidian's own link-parsing extension (already registered
+ * elsewhere) picks it up the same way it would a hand-typed link.
  */
-export function insertAiNotes(view: EditorView, placements: Array<{ charPos: number; content: string }>) {
+export function insertAiNotes(view: EditorView, placements: Placement[], reportLinkTexts: Map<number, string> = new Map()) {
   const sorted = [...placements].sort((a, b) => b.charPos - a.charPos);
-  for (const p of sorted) insertNoteAt(view, p.charPos, 'ai', p.content);
+  for (const p of sorted) {
+    const insertText = renderPlacementText(p, reportLinkTexts.get(p.charPos));
+    view.dispatch({ changes: { from: p.charPos, to: p.charPos, insert: insertText }, selection: { anchor: p.charPos } });
+  }
 }
 
 /**

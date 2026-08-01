@@ -1,4 +1,4 @@
-import { App, requestUrl } from 'obsidian';
+import { App, TFile, TFolder, requestUrl } from 'obsidian';
 import { MN_RE } from './noteMarkers';
 import { Paragraph, splitIntoParagraphs } from './paragraphs';
 import type { SecretSettings } from './settings';
@@ -28,9 +28,25 @@ export const AGENT_PROVIDERS: Array<{ id: AgentProvider; label: string; secretFi
   { id: 'ollama', label: 'Ollama (local)', secretField: 'claudeKey' }, // unused for ollama, kept for type uniformity
 ];
 
+/**
+ * Plan §2 — AI-authored linked notes. A placement is either:
+ *  - `kind: 'inline'` (the default, and the only kind that existed before
+ *    this feature) — spliced in as `[mn.ai: content]`, exactly as before.
+ *  - `kind: 'report'` — `content` is still the short in-place remark text
+ *    (used as the `[[link]]`'s alias, so the inline text reads naturally,
+ *    e.g. "continuity notes"), but `reportContent` carries the long-form
+ *    body that gets written to a SEPARATE note file rather than spliced
+ *    inline. The anchor in the source file becomes a plain `[[link]]` to
+ *    that file instead of an `[mn.ai: ...]` marker — see
+ *    buildReportFilePath/spliceReportLink below.
+ * `reportContent` is only meaningful when `kind === 'report'`; it's
+ * `undefined` for inline placements.
+ */
 export interface Placement {
   charPos: number;
   content: string;
+  kind: 'inline' | 'report';
+  reportContent?: string;
 }
 
 export interface BundledAgent {
@@ -76,6 +92,108 @@ export async function loadAgentPrompt(app: App, agentsFolder: string, name: stri
   const bundled = BUNDLED_AGENTS.find((a) => a.name === name);
   if (bundled) return bundled.prompt;
   throw new Error(`No agent profile named "${name}" found (checked bundled profiles and the ${folder || '(unset)'} folder).`);
+}
+
+// ── Plan §2: AI-authored linked reports ────────────────────────────────
+
+/**
+ * One report file per (source file, agent) pair, matching the plan's
+ * naming scheme exactly: "<source basename> — <agent name> — <date>.md"
+ * inside `reportsFolder`. The DATE is included in the filename (not just
+ * inside the file) so a person browsing the reports folder can tell at a
+ * glance when a report was last touched without opening it — but note
+ * this means "same file/agent pair, same DAY" is what triggers append-
+ * reuse below, not "same file/agent pair, ever": a report re-run on a
+ * later day starts a fresh file rather than growing one file forever.
+ * Characters that can't appear in a filename on some platforms (notably
+ * Windows: \ / : * ? " < > |) are replaced with a hyphen so this never
+ * fails on a provider/agent name containing one of them.
+ */
+function sanitizeForFilename(s: string): string {
+  return s.replace(/[\\/:*?"<>|]/g, '-').trim();
+}
+
+function todayDateStamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export function buildReportFilePath(reportsFolder: string, sourceBasename: string, agentName: string): string {
+  const folder = reportsFolder.trim().replace(/^\/+|\/+$/g, '');
+  const name = `${sanitizeForFilename(sourceBasename)} \u2014 ${sanitizeForFilename(agentName)} \u2014 ${todayDateStamp()}.md`;
+  return folder ? `${folder}/${name}` : name;
+}
+
+/**
+ * Creates `path`'s parent folder(s) if they don't already exist. Vault's
+ * own createFolder() throws if the folder is already there, so existence
+ * is checked first rather than relying on try/catch to distinguish
+ * "already exists" from a real failure.
+ */
+async function ensureFolderExists(app: App, path: string): Promise<void> {
+  const idx = path.lastIndexOf('/');
+  if (idx === -1) return; // no folder component — writing to vault root
+  const folderPath = path.slice(0, idx);
+  if (!folderPath) return;
+  const existing = app.vault.getAbstractFileByPath(folderPath);
+  if (existing instanceof TFolder) return;
+  // Vault.createFolder doesn't create intermediate parents on every
+  // Obsidian version reliably, so walk the path segment by segment.
+  const segments = folderPath.split('/');
+  let cur = '';
+  for (const seg of segments) {
+    cur = cur ? `${cur}/${seg}` : seg;
+    const found = app.vault.getAbstractFileByPath(cur);
+    if (found instanceof TFolder) continue;
+    if (found instanceof TFile) throw new Error(`Cannot create reports folder "${cur}" \u2014 a file with that name already exists.`);
+    await app.vault.createFolder(cur);
+  }
+}
+
+/**
+ * Writes `reportContent` to `path`, appending to the file if a run
+ * earlier the same day already created it for this exact source-file/
+ * agent pair (see buildReportFilePath's doc comment for the reuse
+ * window), rather than overwriting or creating a duplicate. Mirrors
+ * `openInCompanionSplit`'s "reuse if it still exists" pattern (see
+ * marginPanel.ts) — checked fresh via getAbstractFileByPath each call
+ * rather than a cached reference, since the underlying object here is a
+ * vault path a person could have renamed or deleted between runs, not an
+ * in-memory workspace leaf.
+ *
+ * Each append is visually separated with a horizontal rule and a small
+ * timestamp heading so multiple same-day runs (e.g. re-running the agent
+ * after an edit) are distinguishable within one file rather than reading
+ * as one undifferentiated blob.
+ */
+export async function writeOrAppendReport(app: App, path: string, reportContent: string): Promise<TFile> {
+  await ensureFolderExists(app, path);
+  const existing = app.vault.getAbstractFileByPath(path);
+  if (existing instanceof TFile) {
+    const stamp = new Date().toLocaleTimeString();
+    await app.vault.append(existing, `\n\n---\n\n#### Update — ${stamp}\n\n${reportContent}\n`);
+    return existing;
+  }
+  return app.vault.create(path, `${reportContent}\n`);
+}
+
+/**
+ * The `[[link]]` text inserted into the SOURCE file for a report
+ * placement. Uses the file's basename (not its full vault path) as the
+ * link target — standard Obsidian shorthand-link form, resolved the same
+ * way any hand-typed `[[Note]]` link is — with `linkLabel` (the
+ * placement's own `content`, e.g. "continuity notes") as the alias, so
+ * the inline text reads naturally rather than showing the raw filename.
+ * This is deliberately plain `[[...]]` syntax, NOT wrapped in an
+ * `[mn.ai: ...]` marker: nesting a link inside a note marker would
+ * suppress its own margin chip/live-preview (see linkMarkers.ts's
+ * findTopLevelLinkMarkers), which is exactly the opposite of what plan
+ * §2 wants — the link should get full normal-link treatment "for free."
+ */
+export function buildReportLinkText(reportFilePath: string, linkLabel: string): string {
+  const basename = reportFilePath.slice(reportFilePath.lastIndexOf('/') + 1).replace(/\.md$/i, '');
+  return `[[${basename}|${linkLabel}]]`;
 }
 
 // ── §3 hallucination-protection: pre-write invariant check ────────────────
@@ -164,6 +282,14 @@ function locateQuoteInParagraph(paragraph: Paragraph, quote: string | undefined)
  * one unquoted one) — the nudge counter only advances for the fallback
  * case, so a quoted note never "uses up" a nudge slot an unquoted note
  * would otherwise need.
+ *
+ * Plan §2 — `kind`/`reportContent` (see Placement's own doc comment) pass
+ * straight through unchanged; anchoring logic above is identical for both
+ * kinds; what differs is only what agentRunner.ts later splices in at
+ * that charPos (an `[mn.ai: ...]` marker for 'inline', a `[[link]]` for
+ * 'report'). An unrecognised/missing `kind`, or a 'report' with no actual
+ * `reportContent` to write, silently degrades to 'inline' — see inline
+ * comments below — rather than dropping the placement.
  */
 export function resolveParagraphPlacements(
   rawPlacements: unknown[],
@@ -176,13 +302,26 @@ export function resolveParagraphPlacements(
   let rejected = 0;
 
   for (const item of rawPlacements) {
-    const p = item as { paragraphId?: unknown; content?: unknown; quote?: unknown };
+    const p = item as { paragraphId?: unknown; content?: unknown; quote?: unknown; kind?: unknown; reportContent?: unknown };
     if (!p || typeof p !== 'object') continue;
     const content = typeof p.content === 'string' ? p.content.trim() : '';
     if (!content) continue;
     const paragraphId = typeof p.paragraphId === 'string' ? p.paragraphId.trim() : '';
     const paragraph = byId.get(paragraphId);
     if (!paragraph) continue; // unknown/malformed id — nothing safe to clamp to
+
+    // Plan §2 — report kind. Anything other than the literal string
+    // "report" is treated as the (default, pre-existing) "inline" kind —
+    // an unrecognised or missing kind value degrades to today's inline-
+    // note behaviour rather than being dropped, so a model that ignores
+    // or misspells the field still produces a normal, safe note instead
+    // of silently losing the placement.
+    const kind: 'inline' | 'report' = p.kind === 'report' ? 'report' : 'inline';
+    const reportContent = typeof p.reportContent === 'string' ? p.reportContent.trim() : '';
+    // A "report" placement with no actual report body has nothing to
+    // write anywhere — demote it to inline rather than creating an empty
+    // report file or silently dropping a note the model clearly intended.
+    const effectiveKind: 'inline' | 'report' = kind === 'report' && reportContent ? 'report' : 'inline';
 
     const quote = typeof p.quote === 'string' ? p.quote : undefined;
     const quoteOffset = locateQuoteInParagraph(paragraph, quote);
@@ -201,7 +340,11 @@ export function resolveParagraphPlacements(
       rejected++;
       continue;
     }
-    out.push({ charPos, content });
+    out.push(
+      effectiveKind === 'report'
+        ? { charPos, content, kind: 'report', reportContent }
+        : { charPos, content, kind: 'inline' }
+    );
   }
   return { placements: out, rejected };
 }
@@ -328,7 +471,7 @@ function buildPrompt(agentProfilePrompt: string, text: string, options: PromptOp
     'Decide which paragraphs need a note and what each should say. Respond',
     'with ONLY a JSON array, no prose before or after it, no markdown code',
     'fence, in exactly this shape:',
-    '[{"paragraphId": "<the P-number of the paragraph, exactly as tagged, e.g. \\"P3\\">", "content": "<note text>", "quote": "<optional short exact substring>"}]',
+    '[{"paragraphId": "<the P-number of the paragraph, exactly as tagged, e.g. \\"P3\\">", "content": "<note text>", "quote": "<optional short exact substring>", "kind": "<optional: \\"inline\\" (default) or \\"report\\">", "reportContent": "<required only if kind is \\"report\\": the long-form body>"}]',
     '',
     'Rules:',
     '- paragraphId must be copied exactly from one of the "[Pn]" tags shown',
@@ -342,6 +485,22 @@ function buildPrompt(agentProfilePrompt: string, text: string, options: PromptOp
     '  invent a quote just to fill the field. Never count characters or',
     '  guess a position yourself; "quote" is text to be located, not an',
     '  offset.',
+    '- "kind" is OPTIONAL and defaults to "inline". Almost every note should',
+    '  be "inline" \u2014 a short remark that belongs right next to the text it',
+    '  is about, exactly like a normal margin note. Only use "kind":',
+    '  "report" for something that is genuinely its own document: a',
+    '  continuity report spanning many paragraphs, a style-consistency',
+    '  summary of the whole text, or a list collecting every place a',
+    '  recurring issue shows up. A single short observation about one',
+    '  paragraph is NEVER a report, no matter how it is phrased.',
+    '- When "kind" is "report", "content" is still required and should be a',
+    '  short label for the link itself (e.g. "continuity notes",',
+    '  "style summary") \u2014 it is what appears inline where the note is',
+    '  anchored, NOT the report\u2019s actual content. The long-form write-up',
+    '  goes in "reportContent" instead, which may be as long as needed and',
+    '  may use its own Markdown headings/lists. Do not put the long-form',
+    '  body in "content", and do not set "kind" to "report" without also',
+    '  providing "reportContent".',
     '- A paragraph MAY get more than one note if it genuinely has more than',
     '  one DISTINCT issue worth flagging \u2014 return a separate entry per',
     '  issue (same paragraphId, different content) rather than combining',
@@ -438,17 +597,62 @@ function stripAiNotes(text: string): string {
  * markers must be byte-identical before and after. Both sides are stripped
  * of ai markers (rather than just the "after" side) so a vault that already
  * had older ai notes in it doesn't produce a false mismatch.
+ *
+ * Plan §2 — report placements insert a plain `[[link]]`, not an
+ * `[mn.ai: ...]` marker (see buildReportLinkText's doc comment for why),
+ * so the static regex above can't recognise them the way it recognises
+ * inline notes. Rather than trying to pattern-match "was this [[link]]
+ * AI-inserted" from the text alone (indistinguishable from a human-typed
+ * link to the same file), the caller passes the EXACT list of strings it
+ * just inserted — it already knows precisely what those are, since it
+ * built them — and those literal occurrences are stripped from `after`
+ * before comparing. This keeps the guarantee just as strong as before
+ * for inline notes (still a pure regex, no caller-supplied state needed)
+ * while extending it correctly to report links without weakening it: a
+ * `[[link]]` that was already in the document before this run, and
+ * happens to match one of the inserted strings by coincidence, would at
+ * worst make the check slightly less strict for that one file on that one
+ * run — it can never hide an insertion the caller didn't actually make,
+ * since only strings actually passed in are ever stripped.
  */
-export function verifyInsertOnly(before: string, after: string): boolean {
-  return stripAiNotes(before) === stripAiNotes(after);
+export function verifyInsertOnly(before: string, after: string, insertedLinkTexts: string[] = []): boolean {
+  const stripLinkTexts = (t: string) => {
+    let out = t;
+    for (const linkText of insertedLinkTexts) {
+      // split/join rather than a single replace() — replace() with a
+      // plain string only removes the FIRST occurrence, but two distinct
+      // report placements could legitimately produce identical link text
+      // (same report file, same label), and every occurrence actually
+      // inserted needs to be accounted for, not just one.
+      out = out.split(linkText).join('');
+    }
+    return out;
+  };
+  return stripLinkTexts(stripAiNotes(before)) === stripLinkTexts(stripAiNotes(after));
 }
 
-/** Sequential text splice used for files not open in a live editor (see agentRunner.ts). */
-export function spliceIntoRawText(text: string, placements: Placement[]): string {
+/**
+ * The exact text spliced in at a placement's charPos. Shared by
+ * spliceIntoRawText (below) and marginPanel.ts's insertAiNotes so the two
+ * insertion paths (file not open in an editor vs. file open live) can
+ * never drift into inserting different text for the same placement kind.
+ * `reportLinkText`, when the placement is `kind: 'report'`, is the
+ * already-built `[[target|alias]]` string (see buildReportLinkText) —
+ * built by the caller because it alone knows the report file's real path,
+ * which this function has no way to derive from a Placement alone.
+ */
+export function renderPlacementText(p: Placement, reportLinkText?: string): string {
+  if (p.kind === 'report' && reportLinkText) return reportLinkText;
+  return `[mn.ai: ${p.content}]`;
+}
+
+/** Sequential text splice used for files not open in a live editor (see agentRunner.ts). `reportLinkTexts` maps a report placement's charPos to its already-built [[link]] text. */
+export function spliceIntoRawText(text: string, placements: Placement[], reportLinkTexts: Map<number, string> = new Map()): string {
   const sorted = [...placements].sort((a, b) => b.charPos - a.charPos);
   let result = text;
   for (const p of sorted) {
-    result = result.slice(0, p.charPos) + `[mn.ai: ${p.content}]` + result.slice(p.charPos);
+    const insertText = renderPlacementText(p, reportLinkTexts.get(p.charPos));
+    result = result.slice(0, p.charPos) + insertText + result.slice(p.charPos);
   }
   return result;
 }

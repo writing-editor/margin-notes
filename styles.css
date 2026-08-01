@@ -66,12 +66,12 @@
   right: 0;
   pointer-events: auto;
   cursor: pointer;
-  background: var(--background-secondary);
+  background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-left: 3px solid var(--text-accent);
   border-radius: 4px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.4;
   color: var(--text-normal);
   /* CRITICAL: without this, max-height below only constrains the CONTENT
