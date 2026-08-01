@@ -339,6 +339,26 @@ export class MarginNotesSettingTab extends PluginSettingTab {
             'committed in plain text.'
         );
       }
+      // Shown regardless of encryption state (unlike the git warning above),
+      // because two different sync paths matter here: Obsidian Sync's own
+      // docs confirm .obsidian syncs even though hidden folders are
+      // normally excluded, but its "community plugin" sync specifically
+      // (which is what actually carries data.json) is OFF by default and
+      // has to be turned on deliberately. A generic file-sync tool (Dropbox,
+      // Syncthing, iCloud, etc.) has no such plugin-aware distinction at
+      // all and syncs data.json by default along with everything else in
+      // the folder. Either way it's a risk for a plaintext key, and even a
+      // genuinely OS-keychain-encrypted key won't usefully transfer to
+      // another device (safeStorage is machine-bound) — worth a heads-up
+      // regardless of which encryption state is currently in effect.
+      containerEl.createEl('p', {
+        cls: 'setting-item-description mn-secret-warning',
+        text:
+          'Heads up if you sync this vault: this key lives in this plugin\u2019s data.json inside .obsidian. ' +
+          'Obsidian Sync keeps that folder\u2019s plugin settings out unless you turn on its "community plugin" ' +
+          'sync options yourself \u2014 but a generic file-sync tool (Dropbox, Syncthing, iCloud, etc.) has no ' +
+          'such distinction and will sync it right along with everything else.',
+      });
       new Setting(containerEl)
         .setName(`${providerMeta.label} API key`)
         .setDesc(secretStorageDescription())

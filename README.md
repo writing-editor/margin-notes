@@ -1,389 +1,121 @@
-# Margin Notes (Obsidian plugin)
+# Margin Notes
 
-Literal book-margin notes, ported from the ManuScript app's CM6 editor, plus
-an AI notes agent. A file opts into margin notes via a frontmatter property
-(default `margin-notes: true`), a folder rule, or "every file" — everything
-else is a completely unmodified Obsidian editor.
+Literal book-margin notes for Obsidian — jot a quick note next to any
+paragraph, the same way you'd scribble in the margin of a physical book.
+Turn it on per file, per folder, or vault-wide. Comes with an optional AI
+notes agent that can suggest and place notes for you.
 
-> Git sync used to live in this plugin too. It's been split out into its
-> own plugin, **Git Lite**, since it has nothing to do with margin notes —
-> see that plugin's repo/folder. Nothing here depends on it.
+![Margin Notes in action](docs/screenshot.png)
 
-## What's here
+## Getting started
 
-```
-manifest.json          — plugin manifest
-main.js                — pre-built bundle (already compiled, see below)
-styles.css              — margin layout, chip styling, note-sheet modal
-src/
-  main.ts                — plugin entry: settings, commands, refresh hooks
-  runtime.ts              — settings singleton + isMarginNotesEnabled()
-  settings.ts             — settings shape + settings tab UI (notes/links/agent)
-  secureStorage.ts        — OS-keychain-backed secret storage (falls back to plaintext, honestly)
-  paragraphs.ts           — the one shared "what is a paragraph" definition (ported from lib/paragraphs.js)
-  noteMarkers.ts          — ported from noteWidgets.js: [mn: ...] → superscript widget
-  linkMarkers.ts          — [[link]] → plain, underlined clickable inline text (![[embeds]] untouched, left to Obsidian)
-  linkPreview.ts          — async resolve/read/render/cache for link margin chips
-  marginLayout.ts         — shared two-pass anchor+clamp layout, generic across chip kinds
-  marginPanel.ts          — the literal margin column: builds note chips and link chips, narrow-pane/mobile gate, bulk agent insert
-  noteTypes.ts            — note-type registry (color/label) + link chip accent color
-  agents.ts               — provider dispatch, paragraph-ID contract (ported from lib/ai-proxy.js)
-  agentRunner.ts          — orchestrates one run across selection/file/vault scope
-```
+1. Settings → Community plugins → enable "Margin Notes".
+2. Turn margin notes on for a file: add `margin-notes: true` to that
+   file's frontmatter (or set a folder rule / "every file" in the plugin's
+   settings, if you'd rather not add it per file).
+3. Run **Insert margin note** (Cmd/Ctrl+P) with your cursor in a
+   paragraph, or type `[mn.` to pick a note type as you write.
+4. That's it — the note shows as a small superscript marker inline, with
+   its full content in a chip in the margin.
 
-## Installing it in your vault (no build needed)
+### Writing a note directly
+
+You can also just type the syntax yourself instead of using the command:
+
+| You type | What you get |
+|---|---|
+| `[mn: a quick note]` | a plain margin note |
+| `[mn.question: why does this happen?]` | a note tagged with a type (color-coded in the margin) |
+
+### Links in the margin
+
+A normal `[[wikilink]]` in a file with margin notes turned on gets a
+margin chip too — a live preview of the linked note's content, updated
+automatically if that note changes. See the
+[full links & hover-zoom guide](docs/links-and-hover-zoom-user-guide.md)
+for the details (aliases, headings, hover-zoom, etc).
+
+## The AI notes agent (optional)
+
+Beyond writing notes yourself, you can ask an AI agent to read a file (or
+your whole vault) and suggest notes for you — continuity issues, line
+edits, or whatever a custom agent profile asks it to look for. It's
+entirely opt-in: nothing runs until you explicitly trigger it.
+
+Set it up in Settings → Margin Notes:
+- Pick a provider (Claude, OpenAI, Gemini, or a local Ollama instance) and
+  add your API key, or point at Ollama for a fully local setup.
+- Pick an agent profile — two are bundled (continuity checker, line
+  editor), or drop your own markdown file into the configured agents
+  folder to define more.
+- Pick a scope: current selection, current file, or the whole vault.
+- Run it from the command palette or the settings-tab button.
+
+Every AI-suggested note is clearly marked (`[mn.ai: ...]`) and never edits
+your existing prose — it only adds notes alongside it.
+
+### Network use
+
+The core margin-notes feature (writing `[mn: ...]` and `[[link]]` markers
+yourself) makes no network calls at all. The AI agent above is the only
+feature that does:
+
+- **What's sent:** the text of the current file, the current selection, or
+  every enabled file in the vault — whichever scope you pick — plus your
+  chosen agent profile's instructions. Nothing else (no telemetry, no
+  usage analytics, no vault metadata beyond that text).
+- **Where it's sent:** whichever provider you configure and give an API
+  key to — Anthropic (Claude), OpenAI, or Google (Gemini) — or a locally
+  running Ollama instance you point at yourself, in which case nothing
+  leaves your machine. You choose the provider; nothing is contacted by
+  default.
+- **When it's sent:** only when you explicitly run the agent — never
+  automatically, never on a timer, never on file open/save.
+- **API keys:** stored encrypted through your OS keychain when that's
+  genuinely available on your platform/session. When it isn't, the key is
+  stored in plain text in this plugin's `data.json`, and the settings tab
+  says so plainly rather than claiming otherwise.
+  - **If your vault is a git repository:** `.obsidian` is **not**
+    gitignored by Obsidian automatically — add it yourself if you don't
+    want a plaintext key committed.
+  - **If you use Obsidian Sync:** Obsidian's own docs say the vault's
+    `.obsidian` config folder syncs even though hidden folders are
+    normally excluded — but the specific option that carries per-plugin
+    settings (`data.json`), "Installed/Active community plugin list," is
+    **off by default** and has to be turned on deliberately.
+  - **If you use a generic file-sync tool instead** (Dropbox, Syncthing,
+    iCloud, a synced folder, etc.): these have no concept of "plugin
+    settings" as a separate category — they sync `.obsidian` and
+    everything in it, including `data.json`, the same as any other file,
+    with no toggle to exclude it.
+  - Either way, if your key is only obscured with `plain:` (see above),
+    a sync path that includes `data.json` sends the plaintext key
+    wherever that sync goes, not just between your own devices. Even a
+    genuinely OS-keychain-encrypted key (`enc:`) is encrypted for the
+    machine that made it — Electron's `safeStorage` is machine-bound, so
+    a synced copy typically just fails to decrypt on a different device
+    rather than transferring usefully. Either way, re-enter the key
+    per-device rather than relying on sync to carry it, and check your
+    sync service's own settings for whether community-plugin data is
+    included before assuming it isn't.
+
+## Installing (no build needed)
 
 1. Create `<your-vault>/.obsidian/plugins/margin-notes/`.
 2. Copy `manifest.json`, `main.js`, and `styles.css` into that folder.
 3. In Obsidian: Settings → Community plugins → reload, then enable "Margin Notes".
-4. Settings → Margin Notes: pick a trigger, margin width, and
-   agent provider/model/key/profile/scope.
-5. Open a file that matches the trigger and run **Insert margin note** (Cmd/Ctrl+P).
 
-## Building from source
+## Known caveats
 
-```
-npm install
-npm run build     # tsc typecheck + esbuild production bundle -> main.js
-```
+- **Selection scope needs a live editor** — running the AI agent on just
+  your current selection only works on the file you currently have open,
+  not when scope is set to "vault."
 
-## How the pieces fit together
+## More
 
-- **Selective activation.** Both `noteMarkers.ts` and `marginPanel.ts` read
-  Obsidian's `editorInfoField` (a CM6 `StateField` Obsidian injects into every
-  markdown editor's state) to find the associated file, then check
-  `isMarginNotesEnabled()`. Each open editor decides independently.
-- **Paragraph alignment.** Chips align to the top of the paragraph the note
-  belongs to via `paragraphs.ts`'s `splitIntoParagraphs()` — the identical
-  function the agent uses for paragraph IDs (see below), so "paragraph 4" on
-  screen and "paragraph 4" a note is anchored to are guaranteed to be the
-  same block of text, not two independent guesses that could disagree.
-- **The note-sheet modal** is one toolbar row — a type dropdown on the left,
-  icon buttons (delete/save/cancel) on the right — over a borderless
-  textarea with only a placeholder. Obsidian's own default modal close
-  button is hidden via CSS so there's exactly one close control, not two. It
-  opens anchored near the triggering click/cursor position rather than
-  screen-centered.
-- **Agents — the model never sees or invents a character offset.** This was
-  a real bug in an earlier version of this plugin (and, per `lib/ai-proxy.js`'s
-  own history, in an earlier version of the original app too): asking a
-  model to return `charPos` doesn't work, because models don't reliably
-  count characters over any real document length — the numbers come back
-  off, landing mid-word or in the wrong paragraph entirely.
-
-  Instead: `paragraphs.ts` splits the text first and tags each block `[P1]`,
-  `[P2]`, ... in what's shown to the model. The model is only ever asked to
-  *name* a paragraph id it recognizes — not estimate a position — and
-  `resolveParagraphPlacements()` looks up that id's real, exact start offset
-  by table lookup, not a guess. On top of that: at most one note per
-  paragraph (first wins on a duplicate), a density cap at roughly one note
-  per 50 words as a hard backstop behind the prompt's own "don't flag every
-  paragraph" instruction, and a resolved position landing inside an existing
-  `[mn.*: ...]` marker is rejected outright. After writing,
-  `verifyInsertOnly()` strips all `[mn.ai: ...]` markers from both
-  before/after snapshots and confirms they're otherwise byte-identical.
-
-  All calls go through Obsidian's `requestUrl`, which bypasses CORS entirely
-  — no proxy needed, unlike the original app's mobile setup.
-- **Scope: selection, file, or vault.** Selection scope sends only the
-  selected substring to the model; the returned paragraph-relative offsets
-  are shifted by the selection's start position before insertion, so a note
-  from a two-paragraph selection lands correctly in the full document, not
-  at the top of the file. File scope runs on the whole active file. Vault
-  scope runs across every file currently matching the enablement rule.
-- **Remembering config.** Provider, per-provider model, agent profile, and
-  scope persist in the plugin's normal settings (`data.json`). API keys go
-  through `secureStorage.ts`: encrypted via Electron's `safeStorage` (your
-  OS keychain) when available, plaintext with an explicit on-screen note
-  when it isn't (mobile, or a desktop with no keyring backend).
-
-## Links in the margin
-
-> **For usage instructions, see
-> [`docs/links-and-hover-zoom-user-guide.md`](docs/links-and-hover-zoom-user-guide.md).**
-> The rest of this section is implementation notes for developers.
-
-`[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, and
-`[[Note#Heading|Alias]]` render inline as plain, underlined clickable text
-(no brackets, muted accent color instead of Obsidian's default blue) — same
-visual weight as surrounding prose, just distinguishable enough to notice.
-A margin chip appears next to that line with a live-rendered preview of the
-target note's content.
-
-`![[embeds]]` are deliberately **not** part of this feature — they were
-tried (parsed, given a margin chip, left to render inline via Obsidian's
-own native embed handling too) and reverted. Obsidian's own Live Preview
-already renders `![[...]]` as a live embedded block right where it's
-written; adding a second, independent margin-chip preview on top of that
-just duplicated the same content for no benefit, and the two decorators
-(this plugin's `Decoration.replace` and Obsidian's own embed rendering)
-fighting over the same character range produced genuinely inconsistent
-bugs — sometimes the chip won, sometimes Obsidian's own embed won, with no
-reliable way to predict which. `[[links]]` don't have that overlap —
-Obsidian leaves them as plain clickable text with nothing rendered inline,
-which is exactly the gap this feature fills — so links get full treatment
-and embeds are left 100% to Obsidian.
-
-- **`linkMarkers.ts`** parses `[[...]]` (`target[#heading][|alias]`
-  grammar) and decorates matches with a plain `<span class="mn-linktext">`
-  widget. Clicking it calls Obsidian's own `app.workspace.openLinkText()` —
-  the same link-click behavior Obsidian's built-in renderer uses. The
-  regex intentionally does NOT use a lookbehind to exclude `![[...]]` —
-  iOS's JS engine doesn't support lookbehind assertions, and using one here
-  would have silently broken every link on iPhone rather than throwing an
-  obvious error. Instead, `findLinkMarkers()` does a manual "was the
-  character right before this preceded by `!`" check against the raw text,
-  which is lookbehind-free and behaves identically.
-- **Nested links inside `[mn: ...]` notes.** A `[[link]]` written inside a
-  note's own content (e.g. `[mn: see [[Character Bible]] for context]`) is
-  swallowed into the note as plain text — it does NOT also get its own
-  underline/margin chip. `findTopLevelLinkMarkers()` (in `linkMarkers.ts`)
-  excludes any link whose range falls inside a note marker's range before
-  either the inline decoration or the margin chip layer ever sees it. This
-  matters for two reasons: (1) two different CM6 extensions each trying to
-  `Decoration.replace` overlapping, nested ranges is not something CM6
-  resolves predictably — avoiding the overlap entirely sidesteps that
-  rather than relying on undefined behavior; (2) `noteMarkers.ts`'s own
-  regex (`MN_RE`) is non-greedy and, on its own, stops at the FIRST `]` it
-  finds after the note's colon — which used to be the nested link's own
-  closing bracket, truncating the note's content and leaving stray bracket
-  characters as broken visible text. `findNoteMarkers()` now includes a
-  bracket-depth-aware rescan (`findTrueNoteEnd()`) that finds the note's
-  real closing bracket whenever its captured content contains an
-  unbalanced `[[` — a plain note with no nested double-brackets is
-  completely unaffected and takes the same fast path as before.
-- **`linkPreview.ts`** owns the async side: resolving the link target via
-  `app.metadataCache.getFirstLinkpathDest()` (re-checked fresh on every
-  call — a link that briefly fails to resolve is never treated as a
-  permanently stable "missing" answer), reading its content with
-  `app.vault.cachedRead()`, and caching the fetched **markdown string**
-  (not a rendered DOM element) keyed by the resolved file's path, so
-  multiple links to the same note share one fetch. Each individual chip
-  then renders its **own independent DOM element** from that shared string
-  via `renderForConsumer()`, with its own `Component` for lifecycle. This
-  replaced an earlier design that cached one shared, already-rendered
-  `HTMLElement` per target and handed it to every chip referencing that
-  file — which was broken, since a DOM node can only ever have one parent:
-  whichever chip called `replaceChildren()` on the shared node last would
-  silently steal it away from every earlier chip pointing at the same
-  note, producing exactly the symptom "the same note linked twice on a
-  page — only one of the two chips ever shows a preview, and which one is
-  order/timing-dependent." A broken link shows a distinct "note not found"
-  chip state instead of a blank or throwing chip, and self-corrects the
-  next time it's checked once the target file exists. The cache
-  invalidates and live-updates every subscribed chip when the target file
-  is modified (`vault.on('modify')`).
-- **`marginLayout.ts`** is the shared positioning/clamping engine both note
-  chips and link chips run through — a generic `MarginItem` interface
-  (`{ from, id, buildChip() }`) plus a two-pass "compute every anchor's true
-  position first, then place chips top-down clamping only when the *next*
-  item's real anchor demands it" layout. `marginPanel.ts` merges note
-  markers and (top-level only — see above) link markers into one
-  document-order list before handing it to this pass, so a note and a link
-  near each other on the page get clamping decisions that correctly
-  account for both as neighbors — not two independently-computed layouts
-  fighting over the same vertical space.
-- **Hover-zoom.** Every margin chip — note or link, clamped or not —
-  scales up and lifts on `:hover` (pure CSS `transform` + `box-shadow`, no
-  JS involved in the motion itself), showing its full unclamped content.
-  It's pinned to the margin's own horizontal position
-  (`transform-origin: right center`, matching the track's right-aligned
-  layout) so a zoomed chip never grows toward or over the main text — only
-  leftward/vertically, within the reserved margin space. This has zero
-  effect on the editor's own cursor, selection, or focus.
-- **Narrow-pane / split-view / mobile.** The chip column (built by
-  `marginPanel.ts`'s `MarginColumn`) hides itself — while
-  `noteMarkerField`'s superscripts and `linkMarkerField`'s underlined link
-  text, both independent CM6 `StateField`s, keep rendering completely
-  unaffected — whenever: (a) `Platform.isMobile` is true and the "Hide
-  chips on mobile" setting is on (default: on; phones specifically, not
-  tablets — Obsidian gives tablets the same desktop-style layout), or (b)
-  the editor pane's own rendered width (`view.scrollDOM.clientWidth`, not
-  the window's width — this is what makes a split-pane layout correctly
-  narrow just the pane that's actually narrow) falls below
-  `marginWidth * narrowPaneRatio` (the "Hide chips in narrow panes" setting,
-  default ratio 3.0; 0 disables this check entirely). This is a RATIO
-  against the user's own configured margin width rather than a fixed pixel
-  number, specifically so it scales correctly if the user changes
-  `marginWidth` — a fixed pixel threshold would either feel too aggressive
-  at a narrow `marginWidth` or not aggressive enough at a wide one. A
-  dedicated `ResizeObserver` on the pane's `scrollDOM` guarantees this
-  reacts to a split-pane resize even in edge cases where CM6's own
-  `geometryChanged` update flag might not fire for a given resize path.
-
-## Nested markers, generally
-
-Both marker kinds are designed to resolve overlaps in one direction only,
-to keep the resolution predictable: a `[[link]]`'s range can be nested
-inside an `[mn: ...]` note's range (link-in-note is a normal, supported
-thing to write, and the note simply wins — see above), but an `[mn: ...]`
-note is never expected to be written nested inside a `[[link]]`'s own
-`target`/`heading`/`alias` text (Obsidian's own wikilink syntax doesn't
-have a construct for that, so it isn't a case that comes up in practice).
-If you find a way to construct a genuinely ambiguous nesting beyond
-link-in-note, please file it as a bug — the resolution rule above is
-deliberately the only one implemented, not a general arbitrary-depth
-nesting resolver.
-
-## Known caveats (read before relying on this)
-
-- **`editor.cm` is not officially typed.** If a future Obsidian release
-  changes this, the insert-note command, the agent's live-editor path, and
-  the refresh-on-rename/frontmatter-change hooks fail with a `Notice` instead
-  of a crash. The note *rendering* itself doesn't depend on it.
-- **Selection scope needs a live editor** — it reads the CM6 selection
-  directly, so it only works on the currently open file, not vault scope.
-- **Readable line length / split panes** — see the CSS comments; the margin
-  reservation is a CSS override and may need tuning against unusual themes.
-
-## Notes storage today
-
-`[mn.type: content]` / `[mn: content]` notes are stored literally, inline in
-the document body, decorated by CodeMirror into a superscript widget +
-margin chip — there's no separate file or footnote involved for these.
-
-`[[links]]` are the second, link-backed kind mentioned as a future
-direction in earlier drafts of this README — that direction has now
-shipped (see "Links in the margin" above). Unlike `mn` notes, links don't
-store any content themselves; the margin chip is a live preview of
-whatever the target note currently contains, fetched and cached by
-`linkPreview.ts`. `![[embeds]]` are intentionally not part of this — see
-above for why.
-
-## A possible future direction: richer link-opening
-
-Margin-chip clicks currently open the link's target in a single reused
-split to the right of the pane (`marginPanel.ts`'s `openInCompanionSplit`)
-— clicking several different chips swaps that one companion pane's
-content rather than piling up new splits. This is deliberately kept
-simple for now rather than adding more click modes, but Obsidian's public
-API does support a couple of things worth considering later if there's a
-real need:
-
-- `app.workspace.openPopoutLeaf()` — opens the target in a genuinely
-  separate OS-level window (desktop only), closer to a detached
-  browser-tab feel than an in-window split.
-- Wiring the chip into Obsidian's own native hover-preview popover (the
-  same transient floating preview a normal `[[link]]` already gets on
-  hover), as a no-click "peek" option.
-
-Not implemented — noted here in case it's worth revisiting, but the
-current single-reused-split behavior covers the common case without
-adding another setting or click-mode for people to learn.
-
-## A possible future direction: more/different agent types
-
-The agent system today ships two bundled profiles (continuity checker,
-line editor) and lets anyone drop a markdown file into a configured
-folder to define more, using the same paragraph-anchored placement
-pipeline (`agents.ts`) regardless of what the profile actually asks the
-model to look for. That same pipeline could support quite different
-kinds of agents without new core mechanics, e.g.:
-
-- **A style/voice-consistency agent** — flags places where narration
-  voice, tense, or POV shifts unintentionally partway through a
-  document.
-- **A worldbuilding/continuity cross-reference agent** built on top of
-  the linked-note capability — reads a project's linked "bible" notes
-  ([[links]]) alongside the main text and flags where the prose
-  contradicts something already established in one of those notes,
-  rather than only checking the document against itself.
-- **A vault-context agent** that reads related linked notes as extra
-  context before annotating, rather than seeing only the one file/
-  selection currently being run against.
-- **A read-aloud/pacing agent** that flags paragraphs likely to read
-  awkwardly out loud (sentence length/rhythm heuristics plus a model
-  pass), useful for material meant to be performed or narrated.
-
-None of these need new placement/anchoring mechanics beyond what's
-already planned — they're new prompt profiles plus, in the
-vault-context case, feeding the model more than just the current file's
-own text. Not implemented; listed here as directions worth exploring
-once the core agent-output work (multi-note-per-paragraph, precise
-anchoring, linked report notes) is in place.
-
-## A possible future direction: one-click apply for AI suggestions
-
-Right now every `[mn.ai: ...]` note is pure commentary — the plugin's
-insert-only guarantee means an agent run never touches your actual prose,
-only adds a note alongside it. A natural next step some people will want
-is a small affordance on an AI note — e.g. two circular arrows/a sync
-icon — that, on click, applies the AI's suggested rewrite directly into
-the document and removes the note, rather than leaving you to read the
-suggestion and edit it in by hand.
-
-This is intentionally **not** planned or scheduled — it changes a real
-safety property (agent runs are currently guaranteed non-destructive to
-your prose) into something that can rewrite your document on a click, and
-that needs to be earned with real precision, not bolted onto the existing
-note type. If this is ever built, it likely needs, roughly in order:
-
-- **A genuinely new note kind**, not an extra button on `mn.ai` — so the
-  "this note can rewrite your text" property is visible and distinct
-  from an ordinary annotation, both in the markup and to the person
-  reading it.
-- **Exact-span anchoring**, not paragraph-level anchoring — the model
-  needs to identify a precise, verbatim substring to replace, not just
-  "this paragraph has an issue." Paragraph-level placement (today's
-  approach, and the improved-but-still-paragraph-scoped anchoring
-  planned for regular AI notes) isn't precise enough to safely apply an
-  edit automatically — a wrong or ambiguous match risks silently
-  rewriting the wrong text.
-- **A confirm-before-write UX**, most likely a diff-style preview (show
-  exactly what will change) rather than a single click committing an
-  edit with no preview at all.
-- **Acceptance that smaller/local models will struggle here** — proposing
-  a reliable verbatim replacement span is a harder task than proposing a
-  paragraph-scoped comment, and the failure modes are worse (a missed
-  match fails safely and does nothing; a wrong match silently edits the
-  wrong spot) — so this feature's quality will likely track model choice
-  much more closely than today's note-placement agents do.
-
-A safer intermediate step, if this direction is pursued at all: let an AI
-note *propose* a specific rewrite as part of its (still just) commentary,
-so a person can read and manually apply it — automating the "click to
-apply" step only once that proposal mechanism has proven reliable in
-practice.
-
-## A possible future direction: linking one `mn:` note to another
-
-`[[links]]` connect a note to a whole other *file*; there's currently no
-way to link one `[mn: ...]` note to another `[mn: ...]` note living
-elsewhere in the **same** file — useful when one underlying issue is
-mentioned in several places in the same document ("this contradicts what
-was said near the note on this same topic three pages up") and you'd
-rather cross-reference the earlier note than repeat it.
-
-This is a genuinely different problem from file-based links: an `mn:`
-note has no stable identity today beyond its live character offset,
-which shifts constantly as the document is edited elsewhere — so it
-can't be resolved the way `getFirstLinkpathDest` resolves a file. Two
-possible approaches, in order of how safe they'd be to build:
-
-- **Explicit, user-assigned anchor ids** — something like
-  `[mn#continuity1: ...]` to name a note, and a way to reference that id
-  from elsewhere (a new small syntax, or a variant of the existing link
-  syntax) to jump to it. Safer: the reference stays valid regardless of
-  what else changes in the document, the same way `[[Note#Heading]]`
-  already asks a person to name the heading explicitly rather than
-  guessing its position.
-- **Implicit positional ids** ("the 3rd note in this file") — cheaper to
-  write, but fragile: deleting or reordering an earlier note would
-  silently break every later reference to it, which is exactly the kind
-  of silent-corruption risk called out above for one-click-apply.
-
-The click behavior itself would likely scroll the same editor pane to
-the target note (not open a split — this is same-file navigation) and
-give the target note's chip a small "back" affordance to return to where
-you clicked from, ideally as a short stack rather than a single fixed
-origin, so following a chain of two or three references can retrace its
-steps.
-
-Automatically detecting that two notes are *about the same thing*
-(rather than requiring an explicit reference) would need either
-unreliable text-matching heuristics or a model-assisted pass — the
-latter is really an agent capability, and would want to build on
-whatever anchoring work the agent roadmap already produces, rather than
-being invented separately. Not implemented; scoped to same-file
-cross-references only — a cross-file version of this idea is really
-"you want a linked note," which `[[links]]` already provide.
+- Building from source, how the plugin is put together internally, and
+  ideas being considered for the future all live in
+  [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — useful if you're
+  modifying the plugin or just curious, not needed to use it.
+- Git sync used to live in this plugin; it's now a separate plugin, **Git
+  Lite**. Nothing here depends on it.
