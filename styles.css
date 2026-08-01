@@ -66,12 +66,12 @@
   right: 0;
   pointer-events: auto;
   cursor: pointer;
-  background: var(--background-primary);
+  background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   border-left: 3px solid var(--text-accent);
   border-radius: 4px;
   padding: 4px 8px;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.4;
   color: var(--text-normal);
   /* CRITICAL: without this, max-height below only constrains the CONTENT
@@ -245,4 +245,16 @@
 .mn-chip-link.mn-chip-link-missing .mn-chip-link-body {
   color: var(--text-muted);
   font-style: italic;
+}
+/* Settings-tab warning shown above the API key field when secureStorage.ts
+   couldn't get a real OS-backed encryption path this session (see its
+   AvailabilityReason states) — deliberately more visible than the default
+   .setting-item-description styling so it isn't mistaken for routine fine
+   print next to a field where pasting a live credential is the whole point. */
+.mn-secret-warning {
+  border-left: 3px solid var(--text-warning, var(--text-error));
+  background: var(--background-modifier-error, var(--background-secondary));
+  padding: 8px 10px;
+  border-radius: 4px;
+  margin: 4px 0 8px 0;
 }

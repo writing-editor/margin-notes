@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type MarginNotesPlugin from './main';
-import { decryptSecret, encryptSecret, secretStorageDescription } from './secureStorage';
+import { decryptSecret, encryptSecret, encryptionAvailable, secretStorageDescription } from './secureStorage';
 import { AGENT_PROVIDERS, AgentProvider, DensityPosture, SpellingConvention, listAgentNames } from './agents';
 
 export type TriggerMode = 'frontmatter' | 'folder' | 'all';
@@ -324,6 +324,21 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         );
     } else {
       const secretKey = providerMeta.secretField;
+      // Shown ABOVE the field, not just in its small description line —
+      // a person pasting an API key deserves to notice this before they
+      // do it, not find it in fine print after. Only rendered when
+      // encryption genuinely isn't in effect (see secureStorage.ts's
+      // honest-fallback design) — a working OS keychain gets no banner.
+      if (!encryptionAvailable()) {
+        const warning = containerEl.createEl('p', { cls: 'setting-item-description mn-secret-warning' });
+        warning.createEl('strong', { text: '\u26a0\ufe0f ' });
+        warning.appendText(secretStorageDescription() + ' ');
+        warning.appendText(
+          'If this vault is a git repository, check whether ".obsidian" is in your .gitignore \u2014 by ' +
+            'default Obsidian does not gitignore anything for you, so this key would otherwise be ' +
+            'committed in plain text.'
+        );
+      }
       new Setting(containerEl)
         .setName(`${providerMeta.label} API key`)
         .setDesc(secretStorageDescription())
