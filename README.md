@@ -117,5 +117,3 @@ feature that does:
   ideas being considered for the future all live in
   [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — useful if you're
   modifying the plugin or just curious, not needed to use it.
-- Git sync used to live in this plugin; it's now a separate plugin, **Git
-  Lite**. Nothing here depends on it.
