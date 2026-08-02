@@ -1,6 +1,8 @@
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { EditorView } from '@codemirror/view';
-import { DEFAULT_SETTINGS, MarginNotesSettings, MarginNotesSettingTab } from './settings';
+import { AgentSettings, DEFAULT_SETTINGS, MarginNotesSettings, MarginNotesSettingTab } from './settings';
+import { AgentProvider } from './agents';
+import { loadSecretsFile, saveSecretsFile } from './secretsFile';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { noteMarkerField, forceMarginRefresh } from './noteMarkers';
 import { linkMarkerField } from './linkMarkers';
@@ -103,7 +105,26 @@ export default class MarginNotesPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const loaded = (await this.loadData()) ?? {};
+    // loadData() reads whatever JSON happens to be in data.json — genuinely
+    // untyped at the source, since it's arbitrary persisted disk content,
+    // not something this plugin's own types can vouch for until it's been
+    // merged against DEFAULT_SETTINGS below. Narrowed to a deep-partial
+    // shape right here, at the one spot the untyped-ness actually enters,
+    // rather than letting `any` flow through every `loaded.agent` access
+    // that follows.
+    //
+    // `secrets` is deliberately NOT part of this type or the merge below —
+    // API keys live in their own file, api-keys.json, sitting next to (not
+    // inside) data.json specifically so a person can gitignore just that
+    // one file without also gitignoring every other setting. See
+    // secretsFile.ts's own top comment for the full reasoning.
+    type PartialSettings = Partial<Omit<MarginNotesSettings, 'agent' | 'secrets'>> & {
+      agent?: Partial<Omit<AgentSettings, 'modelByProvider'>> & { modelByProvider?: Partial<Record<AgentProvider, string>> };
+    };
+    const loaded = ((await this.loadData()) ?? {}) as PartialSettings;
+
+    const secrets = await loadSecretsFile(this.app);
+
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...loaded,
@@ -112,12 +133,20 @@ export default class MarginNotesPlugin extends Plugin {
         ...(loaded.agent ?? {}),
         modelByProvider: { ...DEFAULT_SETTINGS.agent.modelByProvider, ...(loaded.agent?.modelByProvider ?? {}) },
       },
-      secrets: { ...DEFAULT_SETTINGS.secrets, ...(loaded.secrets ?? {}) },
+      secrets,
     };
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    // secrets is split out and saved to its own file (api-keys.json, via
+    // saveSecretsFile) rather than through this.saveData — see
+    // loadSettings' comment and secretsFile.ts for why. Destructuring it
+    // out here means a plain object spread of `this.settings` — which is
+    // what saveData ultimately serialises to data.json — never contains a
+    // `secrets` key going forward, even accidentally: there's no `secrets`
+    // property left on `rest` to serialise.
+    const { secrets, ...rest } = this.settings;
+    await Promise.all([this.saveData(rest), saveSecretsFile(this.app, secrets)]);
     runtime.settings = this.settings;
     this.refreshAllEditors();
   }

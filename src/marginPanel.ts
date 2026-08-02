@@ -16,9 +16,32 @@ import { renderPlacementText } from './agents';
  * signal for a destructive, irreversible-feeling action. A bin icon makes
  * "this deletes the note" unambiguous at a glance, without needing a text
  * label the tiny badge has no room for anyway.
+ *
+ * Built via Obsidian's own `createSvg`/`createEl` element-creation methods
+ * (available on every HTMLElement) rather than an innerHTML string. The
+ * string was a fixed constant with no user input, so it was never an
+ * actual injection risk, but Obsidian's own reviewer/linter flags
+ * innerHTML categorically since it can't tell "safe hardcoded constant"
+ * apart from "unsafe interpolated string" — and separately prefers its
+ * own createEl-family helpers over raw `document.createElement` so every
+ * plugin's DOM construction goes through one consistent, typed API.
  */
-const TRASH_ICON_SVG =
-  '<svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+function appendTrashIcon(button: HTMLButtonElement): void {
+  const svg = button.createSvg('svg', { attr: { viewBox: '0 0 24 24' } });
+  const paths = ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13', 'M10 11v6', 'M14 11v6'];
+  // Obsidian's createEl/createSvg helpers are confirmed to extend
+  // HTMLElement's prototype (per Obsidian's own obsidian.d.ts); whether
+  // that extension also reaches SVGElement itself isn't something this
+  // plugin's build can verify against the real obsidian package, so each
+  // path is built via the standard, universally-available SVG DOM API
+  // (createElementNS + appendChild) directly on the already-created `svg`
+  // element, rather than chaining a second createSvg call on it.
+  for (const d of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+  }
+}
 
 /**
  * One shared builder for both chip kinds' delete buttons, so the pinned-
@@ -29,11 +52,8 @@ const TRASH_ICON_SVG =
  * buildLinkChip().
  */
 function buildDeleteButton(onDelete: () => void): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.className = 'mn-chip-delete';
-  btn.type = 'button';
-  btn.setAttribute('aria-label', 'Delete note');
-  btn.innerHTML = TRASH_ICON_SVG;
+  const btn = createEl('button', { cls: 'mn-chip-delete', attr: { type: 'button', 'aria-label': 'Delete note' } });
+  appendTrashIcon(btn);
   btn.addEventListener('mousedown', (evt) => {
     // Must stop this before it bubbles to the chip's own mousedown listener
     // (buildChip's focusNoteText / buildLinkChip's openLinkText) — otherwise
@@ -179,8 +199,7 @@ class MarginColumn {
   private companionLeaf: WorkspaceLeaf | null = null;
 
   constructor(private readonly view: EditorView) {
-    this.track = document.createElement('div');
-    this.track.className = 'mn-margin-track';
+    this.track = createEl('div', { cls: 'mn-margin-track' });
     // Appending inside .cm-scroller (not .cm-content) means the track scrolls
     // in lockstep with the text automatically — no manual scroll listener
     // needed, because both are laid out in the same scrolling coordinate
@@ -204,7 +223,15 @@ class MarginColumn {
 
   schedule() {
     if (this.rafHandle !== null) return;
-    this.rafHandle = requestAnimationFrame(() => {
+    // window.requestAnimationFrame (not the bare global) matters specifically
+    // for Obsidian's popout windows: a popout is a separate browser window
+    // with its own `window` object, and the bare identifier can resolve to
+    // the WRONG window's animation-frame timer in that context. this.view's
+    // own DOM lives in whichever window the pane was popped out into, and
+    // that's the window whose paint cycle this frame actually needs to be
+    // scheduled against.
+    const win = this.view.dom.ownerDocument.defaultView ?? window;
+    this.rafHandle = win.requestAnimationFrame(() => {
       this.rafHandle = null;
       // render() is async (see its own doc comment for why: it needs to
       // pre-resolve every link's preview content BEFORE laying anything
@@ -363,15 +390,11 @@ class MarginColumn {
   }
 
   private buildLinkChip(marker: LinkMarker, prefetched?: { el: HTMLElement; component: Component }): HTMLDivElement {
-    const chip = document.createElement('div');
-    chip.className = 'mn-chip mn-chip-link';
+    const chip = createEl('div', { cls: 'mn-chip mn-chip-link' });
     chip.style.borderLeftColor = LINK_CHIP_COLOR;
     chip.dataset.linkId = marker.id;
 
-    const label = document.createElement('span');
-    label.className = 'mn-chip-label';
-    label.textContent = 'link';
-    chip.appendChild(label);
+    chip.createEl('span', { cls: 'mn-chip-label', text: 'link' });
 
     // Placeholder content shown synchronously while the async preview
     // fetch (linkPreview.ts) is in flight — just the bare title. Kept in
@@ -379,10 +402,7 @@ class MarginColumn {
     // chips use) so the preview-swap logic below has one clearly-scoped
     // element to replace the *contents* of, without touching the label
     // span next to it.
-    const body = document.createElement('span');
-    body.className = 'mn-chip-link-body';
-    body.textContent = linkDisplayText(marker);
-    chip.appendChild(body);
+    const body = chip.createEl('span', { cls: 'mn-chip-link-body', text: linkDisplayText(marker) });
 
     const info = this.view.state.field(editorInfoField, false);
     const sourcePath = info?.file?.path ?? '';
@@ -423,36 +443,48 @@ class MarginColumn {
           // parent, so whichever chip last called replaceChildren() on it
           // silently stole it from every other chip pointing at the same
           // note. See linkPreview.ts's cache comment for the full story.
-          renderForConsumer(app, state).then(({ el, component }) => {
-            if (myToken !== renderToken) {
-              // Superseded by a newer render before this one finished —
-              // discard it (and its Component) rather than applying stale
-              // content or leaking the Component.
-              component.unload();
-              return;
-            }
-            const prevComponent = this.linkPreviewComponents.get(marker.id);
-            prevComponent?.unload();
-            this.linkPreviewComponents.set(marker.id, component);
-            body.replaceChildren(el);
-            chip.classList.add('mn-chip-link-loaded');
-            chip.classList.remove('mn-chip-link-missing');
-            // This chip's real content just arrived asynchronously
-            // (the common case here is: this link's fetch was genuinely
-            // still in flight when render()'s pre-fetch step ran, since
-            // that step deliberately doesn't wait on cold fetches — see
-            // render()'s comment). Schedule a re-layout so
-            // layoutMarginItems() re-measures this chip's now-correct
-            // height instead of leaving it sized against the placeholder
-            // it had during the last layout pass. This can still fire more
-            // than once across a chip's lifetime (e.g. once here, then
-            // again after a vault.on('modify') invalidation) — that's
-            // fine; it only ever fires when content actually changes, not
-            // on every rebuild, since a rebuild against an already-warm
-            // cache goes through the `prefetched` branch above instead of
-            // this subscription path reaching 'ready' from scratch.
-            this.schedule();
-          });
+          renderForConsumer(app, state)
+            .then(({ el, component }) => {
+              if (myToken !== renderToken) {
+                // Superseded by a newer render before this one finished —
+                // discard it (and its Component) rather than applying stale
+                // content or leaking the Component.
+                component.unload();
+                return;
+              }
+              const prevComponent = this.linkPreviewComponents.get(marker.id);
+              prevComponent?.unload();
+              this.linkPreviewComponents.set(marker.id, component);
+              body.replaceChildren(el);
+              chip.classList.add('mn-chip-link-loaded');
+              chip.classList.remove('mn-chip-link-missing');
+              // This chip's real content just arrived asynchronously
+              // (the common case here is: this link's fetch was genuinely
+              // still in flight when render()'s pre-fetch step ran, since
+              // that step deliberately doesn't wait on cold fetches — see
+              // render()'s comment). Schedule a re-layout so
+              // layoutMarginItems() re-measures this chip's now-correct
+              // height instead of leaving it sized against the placeholder
+              // it had during the last layout pass. This can still fire more
+              // than once across a chip's lifetime (e.g. once here, then
+              // again after a vault.on('modify') invalidation) — that's
+              // fine; it only ever fires when content actually changes, not
+              // on every rebuild, since a rebuild against an already-warm
+              // cache goes through the `prefetched` branch above instead of
+              // this subscription path reaching 'ready' from scratch.
+              this.schedule();
+            })
+            .catch((err: unknown) => {
+              // MarkdownRenderer.render can throw on genuinely malformed
+              // content — degrade the same way the 'error' state above
+              // does (bare link text, missing-state styling) rather than
+              // leaving an unhandled rejection and a permanently-stuck
+              // placeholder chip.
+              if (myToken !== renderToken) return;
+              console.error('Margin Notes: failed to render link preview', marker.linkpath, err);
+              body.textContent = linkDisplayText(marker);
+              chip.classList.add('mn-chip-link-missing');
+            });
         } else if (state.status === 'missing') {
           body.textContent = `No note titled "${state.linkpath}" yet`;
           chip.classList.add('mn-chip-link-missing');
@@ -590,11 +622,12 @@ class MarginColumn {
     const app = runtime.app;
     if (!app) return;
     try {
-      // vault.trash's second argument (system trash vs. Obsidian's own
-      // .trash folder) follows the user's own "Deleted files" setting the
-      // same way Obsidian's native file-explorer delete does, rather than
-      // this plugin imposing its own always-permanent app.vault.delete().
-      await app.vault.trash(dest, true);
+      // fileManager.trashFile (not vault.trash) is Obsidian's own
+      // recommended API for this — per Obsidian's plugin guidelines,
+      // vault.trash bypasses some of the same "respect the user's actual
+      // Settings → Files and links → Deleted files preference" handling
+      // fileManager.trashFile guarantees.
+      await app.fileManager.trashFile(dest);
     } catch (err) {
       console.error('Margin Notes: failed to delete linked file', dest.path, err);
       new Notice(`Margin Notes: could not delete "${dest.basename}".`);
@@ -615,20 +648,12 @@ class MarginColumn {
   }
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
-    const chip = document.createElement('div');
-    chip.className = 'mn-chip';
+    const chip = createEl('div', { cls: 'mn-chip' });
     chip.style.borderLeftColor = noteTypeColor(marker.type);
     chip.dataset.noteId = String(marker.id);
 
-    const label = document.createElement('span');
-    label.className = 'mn-chip-label';
-    label.textContent = String(marker.id);
-    chip.appendChild(label);
-
-    const text = document.createElement('span');
-    text.className = 'mn-chip-text';
-    text.textContent = marker.content;
-    chip.appendChild(text);
+    chip.createEl('span', { cls: 'mn-chip-label', text: String(marker.id) });
+    chip.createEl('span', { cls: 'mn-chip-text', text: marker.content });
 
     // Clicking a chip (outside the delete button) just moves the caret into
     // the note's own text in the document (the raw `[mn.type: content]`
@@ -677,6 +702,15 @@ class MarginColumn {
 
   destroy() {
     this.resizeObserver.disconnect();
+    // Cancel a still-pending scheduled frame (see schedule()) — without
+    // this, a frame requested just before the editor closes would still
+    // fire afterward and call this.render() against an instance whose
+    // track/scrollDOM have already been torn down below.
+    if (this.rafHandle !== null) {
+      const win = this.view.dom.ownerDocument.defaultView ?? window;
+      win.cancelAnimationFrame(this.rafHandle);
+      this.rafHandle = null;
+    }
     for (const unsub of this.linkPreviewUnsubs.values()) unsub();
     this.linkPreviewUnsubs.clear();
     for (const component of this.linkPreviewComponents.values()) component.unload();

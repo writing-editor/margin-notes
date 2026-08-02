@@ -166,7 +166,8 @@ export async function runAgent(app: App, settings: MarginNotesSettings, activeFi
       console.error('Margin Notes agent run failed for', file.path, err);
       if (settings.agent.scope !== 'vault') {
         notice.hide();
-        new Notice(`Margin Notes: ${(err as Error).message ?? err}`);
+        const message = err instanceof Error ? err.message : String(err);
+        new Notice(`Margin Notes: ${message}`);
         return;
       }
     }

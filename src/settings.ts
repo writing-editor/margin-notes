@@ -140,13 +140,13 @@ export class MarginNotesSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
 
     // ---------------------------------------------------------------- Notes
-    containerEl.createEl('h2', { text: 'Margin notes' });
-    containerEl.createEl('p', {
-      text:
+    new Setting(containerEl)
+      .setName('Margin notes')
+      .setHeading()
+      .setDesc(
         'Margin notes only render for files that match the rule below. Everything else opens as a plain, ' +
-        'unmodified Obsidian note — nothing about the editor changes for those files.',
-      cls: 'setting-item-description',
-    });
+          'unmodified Obsidian note — nothing about the editor changes for those files.'
+      );
 
     new Setting(containerEl)
       .setName('Enable plugin')
@@ -249,13 +249,13 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       );
 
     // ---------------------------------------------------------------- Agent
-    containerEl.createEl('h2', { text: 'Notes agent' });
-    containerEl.createEl('p', {
-      text:
+    new Setting(containerEl)
+      .setName('Notes agent')
+      .setHeading()
+      .setDesc(
         'The agent can only insert new [mn.ai: ...] notes — it never edits your prose or existing notes. ' +
-        'Every insertion is checked after the fact to confirm that held.',
-      cls: 'setting-item-description',
-    });
+          'Every insertion is checked after the fact to confirm that held.'
+      );
 
     new Setting(containerEl)
       .setName('Spelling convention')
@@ -329,35 +329,55 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       // do it, not find it in fine print after. Only rendered when
       // encryption genuinely isn't in effect (see secureStorage.ts's
       // honest-fallback design) — a working OS keychain gets no banner.
+      // Obsidian lets a vault's config folder be renamed away from the
+      // default ".obsidian" (Vault.configDir reflects whatever it's
+      // actually called for THIS vault) — these warnings tell the person
+      // to go look at their own filesystem, so they should name the
+      // folder that's actually there, not assume the default.
+      //
+      // API keys live in a SEPARATE file from every other setting —
+      // api-keys.json, next to data.json — specifically so gitignoring
+      // just the keys doesn't also gitignore the rest of the plugin's
+      // settings. See secretsFile.ts's top comment for the full reasoning.
+      // Both warnings below now name that exact file, since "gitignore
+      // this one precise path" is a much more useful, directly actionable
+      // instruction than the old "check whether your whole config folder
+      // is ignored" — which would have meant gitignoring every other
+      // setting too.
+      const configDir = this.app.vault.configDir;
+      const secretsFilePath = `${configDir}/plugins/margin-notes/api-keys.json`;
       if (!encryptionAvailable()) {
         const warning = containerEl.createEl('p', { cls: 'setting-item-description mn-secret-warning' });
         warning.createEl('strong', { text: '\u26a0\ufe0f ' });
         warning.appendText(secretStorageDescription() + ' ');
         warning.appendText(
-          'If this vault is a git repository, check whether ".obsidian" is in your .gitignore \u2014 by ' +
-            'default Obsidian does not gitignore anything for you, so this key would otherwise be ' +
-            'committed in plain text.'
+          `If this vault is a git repository, add "${secretsFilePath}" to your .gitignore \u2014 by default ` +
+            'Obsidian does not gitignore anything for you, so this key would otherwise be committed in ' +
+            'plain text. Only that one file needs to be ignored; every other setting still lives in ' +
+            'data.json in the same folder and can stay tracked normally.'
         );
       }
       // Shown regardless of encryption state (unlike the git warning above),
       // because two different sync paths matter here: Obsidian Sync's own
-      // docs confirm .obsidian syncs even though hidden folders are
+      // docs confirm the config folder syncs even though hidden folders are
       // normally excluded, but its "community plugin" sync specifically
-      // (which is what actually carries data.json) is OFF by default and
-      // has to be turned on deliberately. A generic file-sync tool (Dropbox,
-      // Syncthing, iCloud, etc.) has no such plugin-aware distinction at
-      // all and syncs data.json by default along with everything else in
-      // the folder. Either way it's a risk for a plaintext key, and even a
-      // genuinely OS-keychain-encrypted key won't usefully transfer to
-      // another device (safeStorage is machine-bound) — worth a heads-up
-      // regardless of which encryption state is currently in effect.
+      // (which is what actually carries data.json — and, since the same
+      // folder syncs as a unit, api-keys.json along with it) is OFF by
+      // default and has to be turned on deliberately. A generic file-sync
+      // tool (Dropbox, Syncthing, iCloud, etc.) has no such plugin-aware
+      // distinction at all and syncs everything in the folder by default,
+      // api-keys.json included. Either way it's a risk for a plaintext key,
+      // and even a genuinely OS-keychain-encrypted key won't usefully
+      // transfer to another device (safeStorage is machine-bound) — worth
+      // a heads-up regardless of which encryption state is currently in
+      // effect.
       containerEl.createEl('p', {
         cls: 'setting-item-description mn-secret-warning',
         text:
-          'Heads up if you sync this vault: this key lives in this plugin\u2019s data.json inside .obsidian. ' +
-          'Obsidian Sync keeps that folder\u2019s plugin settings out unless you turn on its "community plugin" ' +
-          'sync options yourself \u2014 but a generic file-sync tool (Dropbox, Syncthing, iCloud, etc.) has no ' +
-          'such distinction and will sync it right along with everything else.',
+          `Heads up if you sync this vault: this key lives in "${secretsFilePath}". Obsidian Sync keeps ` +
+          'that folder\u2019s plugin settings out unless you turn on its "community plugin" sync options ' +
+          'yourself \u2014 but a generic file-sync tool (Dropbox, Syncthing, iCloud, etc.) has no such ' +
+          'distinction and will sync the whole folder, this file included.',
       });
       new Setting(containerEl)
         .setName(`${providerMeta.label} API key`)
@@ -428,7 +448,10 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         .setButtonText('Run agent now')
         .setCta()
         .onClick(() => {
-          this.plugin.runAgentCommand().catch((err) => new Notice(`Agent run failed: ${err.message ?? err}`));
+          this.plugin.runAgentCommand().catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            new Notice(`Agent run failed: ${message}`);
+          });
         })
     );
   }

@@ -113,7 +113,14 @@ export function getLinkPreview(
     listeners: new Set([onUpdate]),
   };
   cache.set(key, entry);
-  fetchInto(app, dest, entry);
+  // fetchInto is deliberately not awaited here — this function returns the
+  // CURRENT (pending) state synchronously so the caller can render a
+  // placeholder immediately, while the fetch resolves in the background and
+  // notifies listeners via entry.listeners. It never rejects (see its own
+  // try/catch, which always resolves by setting entry.state to 'ready' or
+  // 'error'), so `void` is a correct, deliberate fire-and-forget here, not
+  // a missed error path.
+  void fetchInto(app, dest, entry);
 
   return { state: entry.state, unsubscribe: () => entry.listeners.delete(onUpdate) };
 }
@@ -145,8 +152,7 @@ export async function renderForConsumer(
   app: App,
   state: Extract<PreviewState, { status: 'ready' }>
 ): Promise<{ el: HTMLElement; component: Component }> {
-  const el = document.createElement('div');
-  el.className = 'mn-link-preview-content';
+  const el = createEl('div', { cls: 'mn-link-preview-content' });
   const component = new Component();
   component.load();
   await MarkdownRenderer.render(app, state.markdown, el, state.renderSourcePath, component);
@@ -166,7 +172,7 @@ export function registerLinkPreviewInvalidation(app: App): { unregister: () => v
     entry.mtime = null; // force the next getLinkPreview() call to treat this as stale
     entry.state = { status: 'pending' };
     for (const listener of entry.listeners) listener();
-    fetchInto(app, file, entry);
+    void fetchInto(app, file, entry); // see the other call site's comment — never rejects, deliberately fire-and-forget
   };
   const ref = app.vault.on('modify', handler as unknown as (...data: unknown[]) => unknown);
   return { unregister: () => app.vault.offref(ref) };

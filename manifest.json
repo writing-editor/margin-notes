@@ -1,7 +1,7 @@
 {
   "id": "margin-notes",
   "name": "Margin Notes",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.4.0",
   "description": "Add literal book-margin notes with per-file selective activation, plus an optional AI notes agent that suggests and places them for you.",
   "author": "Abdul Majeed",

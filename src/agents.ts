@@ -220,7 +220,7 @@ export function extractJsonArray(raw: string): unknown[] {
   const end = text.lastIndexOf(']');
   if (start === -1 || end === -1 || end < start) return [];
   try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
+    const parsed: unknown = JSON.parse(text.slice(start, end + 1));
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -680,7 +680,8 @@ async function callClaude(cfg: ProviderConfig, systemPrompt: string, userMessage
     throw: false,
   });
   if (res.status >= 400) throw new Error(`Claude API error ${res.status}: ${res.text.slice(0, 300)}`);
-  const content = (res.json?.content ?? []) as Array<{ type: string; text?: string }>;
+  const body = res.json as { content?: Array<{ type: string; text?: string }> } | undefined;
+  const content = body?.content ?? [];
   return content.map((b) => b.text ?? '').join('\n');
 }
 
@@ -700,7 +701,8 @@ async function callOpenAI(cfg: ProviderConfig, systemPrompt: string, userMessage
     throw: false,
   });
   if (res.status >= 400) throw new Error(`OpenAI API error ${res.status}: ${res.text.slice(0, 300)}`);
-  return res.json?.choices?.[0]?.message?.content ?? '';
+  const body = res.json as { choices?: Array<{ message?: { content?: string } }> } | undefined;
+  return body?.choices?.[0]?.message?.content ?? '';
 }
 
 async function callGemini(cfg: ProviderConfig, systemPrompt: string, userMessage: string): Promise<string> {
@@ -716,8 +718,9 @@ async function callGemini(cfg: ProviderConfig, systemPrompt: string, userMessage
     throw: false,
   });
   if (res.status >= 400) throw new Error(`Gemini API error ${res.status}: ${res.text.slice(0, 300)}`);
-  const parts = res.json?.candidates?.[0]?.content?.parts ?? [];
-  return parts.map((p: { text?: string }) => p.text ?? '').join('\n');
+  const body = res.json as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } | undefined;
+  const parts = body?.candidates?.[0]?.content?.parts ?? [];
+  return parts.map((p) => p.text ?? '').join('\n');
 }
 
 async function callOllama(cfg: ProviderConfig, systemPrompt: string, userMessage: string): Promise<string> {
@@ -736,5 +739,6 @@ async function callOllama(cfg: ProviderConfig, systemPrompt: string, userMessage
     throw: false,
   });
   if (res.status >= 400) throw new Error(`Ollama error ${res.status}: ${res.text.slice(0, 300)} (is Ollama running at ${cfg.ollamaUrl}?)`);
-  return res.json?.message?.content ?? '';
+  const body = res.json as { message?: { content?: string } } | undefined;
+  return body?.message?.content ?? '';
 }

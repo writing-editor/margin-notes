@@ -1,0 +1,65 @@
+name: Release
+
+# Triggered by pushing a tag matching manifest.json's version (e.g. "0.2.0",
+# no "v" prefix — Obsidian's own installer looks for a GitHub Release tag
+# matching manifest.json's version field verbatim, not a "v"-prefixed one).
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write # to create the GitHub Release and upload assets
+  id-token: write # required by actions/attest for keyless (Sigstore) signing
+  attestations: write # required by actions/attest to persist the attestation
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Attests that main.js and styles.css were built by THIS workflow run,
+      # from THIS commit, in THIS repository — addresses the community-plugin
+      # review's "Missing GitHub artifact attestations for release assets"
+      # recommendation. Generated BEFORE the release is created so the
+      # attestation's subject files are exactly the ones about to be
+      # uploaded, not rebuilt separately afterward. Uses actions/attest
+      # (not the older actions/attest-build-provenance) per GitHub's own
+      # current guidance — attest-build-provenance is now just a thin
+      # wrapper around it and GitHub recommends new workflows use attest
+      # directly. Deliberately supplies ONLY subject-path and no
+      # predicate/predicate-type/sbom-path inputs — per actions/attest's
+      # own mode-detection rules, that combination is what selects the
+      # default "Provenance" mode (auto-generated SLSA build provenance);
+      # supplying an empty/placeholder predicate would have silently
+      # switched this into "Custom" mode with a meaningless attestation
+      # instead.
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            styles.css
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            main.js
+            manifest.json
+            styles.css
+          generate_release_notes: true

@@ -67,7 +67,20 @@ type AvailabilityReason =
 let safeStorage: SafeStorageLike | null = null;
 if (Platform.isDesktopApp) {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // Dynamic, runtime-only require behind a Platform.isDesktopApp guard —
+    // not a static/top-level import — is the pattern Obsidian's own plugin
+    // guidelines recommend specifically for optional Node/Electron APIs
+    // like this one. A static top-level `import { safeStorage } from
+    // 'electron'` would execute on every platform including mobile, where
+    // the module may not exist at all (see the module comment above),
+    // rather than only being touched when Platform.isDesktopApp is true
+    // and only inside this try/catch — so both rules below are suppressed
+    // deliberately for this one line, not as a shortcut around them.
+    /* eslint-disable-next-line @typescript-eslint/no-var-requires,
+       @typescript-eslint/no-require-imports --
+       Intentional runtime-only require behind a desktop-only guard, not a
+       static import; see the comment above for why a static import would
+       be wrong here specifically. */
     const electron = require('electron') as { safeStorage?: unknown };
     const candidate = electron?.safeStorage;
     // Verify the SHAPE, not just that something truthy came back — a

@@ -1,6 +1,18 @@
 /* --- Literal margin: reserve space beside the text --- */
 /* Only applied to editors whose file matched the enablement rule; every
-   other open file is untouched. mn-has-margin is toggled by marginPanel.ts. */
+   other open file is untouched. mn-has-margin is toggled by marginPanel.ts.
+
+   !important is kept here deliberately, not out of habit — Obsidian's own
+   CSS lint asks for higher selector specificity instead, but the actual
+   specificity needed to reliably beat Obsidian's own core .cm-content
+   rules (and every third-party theme's own overrides of those same core
+   rules) can't be verified without a live Obsidian instance across
+   multiple themes, and this override is exactly the plugin's core
+   feature — a wrong guess here doesn't just look slightly off, it
+   silently breaks margin reservation entirely for whichever theme it
+   fails against. Kept as the one exception, with this comment explaining
+   why, rather than guessing at a specificity fix that can't be verified
+   from this environment. */
 
 .cm-scroller.mn-has-margin .cm-content {
   margin-right: var(--mn-margin-width, 220px) !important;
@@ -8,7 +20,8 @@
 
 /* Obsidian's "readable line length" centers .cm-content with a max-width;
    without this override the margin column would overlap the centered text
-   instead of sitting in genuinely empty space. */
+   instead of sitting in genuinely empty space. Same !important reasoning
+   as above. */
 .is-readable-line-width .cm-scroller.mn-has-margin .cm-content {
   max-width: none !important;
 }
@@ -45,17 +58,30 @@
    discover. Compromise: a permanent, muted accent color + underline that's
    visibly a link without being Obsidian's loud default blue. Distinct from
    .mn-anchor/.mn-marker (those are `mn:` note superscripts) and kept as its
-   own class for the same reason. */
+   own class for the same reason.
+
+   Deliberately does NOT use text-decoration-color (flagged by Obsidian's
+   CSS lint as only partially supported) to dim the underline independently
+   of the text color. The original design's resting state — accent-colored
+   text, but a dimmer underline than that — can't be reproduced with
+   `color` alone, since text-decoration's line follows `color` when no
+   separate line color is set. Closest equivalent using only universally-
+   supported properties: the underline is dropped to a lighter weight
+   instead of a dimmer color to read as "present but secondary," and both
+   text and underline brighten together via `opacity` on hover — same
+   "muted at rest, clearer on hover" intent, different mechanism. */
 .mn-linktext {
   color: var(--text-accent);
   text-decoration: underline;
-  text-decoration-color: var(--text-faint);
+  text-decoration-thickness: 1px;
   text-underline-offset: 2px;
   cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.1s ease-out;
 }
 
 .mn-linktext:hover {
-  text-decoration-color: var(--text-accent);
+  opacity: 1;
 }
 
 /* --- Margin chips --- */
@@ -71,7 +97,7 @@
   border-left: 3px solid var(--text-accent);
   border-radius: 4px;
   padding: 4px 8px;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-normal);
   /* CRITICAL: without this, max-height below only constrains the CONTENT
@@ -108,6 +134,12 @@
    nothing hidden to hint at. This mask only governs the resting (non-hover)
    state; hover clears it below. */
 .mn-chip.mn-chip-clamped {
+  /* -webkit-mask-image alongside the unprefixed property: mask-image is
+     flagged as only partially supported across the Electron/Chromium
+     versions different Obsidian releases bundle — the prefixed form is
+     the standard compatibility fallback for exactly that gap, not a
+     separate/different effect; both lines describe the same gradient. */
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent 100%);
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent 100%);
 }
 
@@ -125,6 +157,7 @@
   transform: scale(1.12);
   max-height: none;
   overflow: visible;
+  -webkit-mask-image: none;
   mask-image: none;
   border-color: transparent;
   box-shadow: 0 8px 24px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.3));

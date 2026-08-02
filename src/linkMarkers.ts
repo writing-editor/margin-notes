@@ -1,6 +1,6 @@
 import { EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
 import { Decoration, DecorationSet, EditorView, WidgetType } from '@codemirror/view';
-import { editorInfoField } from 'obsidian';
+import { editorInfoField, Notice } from 'obsidian';
 import { isMarginNotesEnabled, runtime } from './runtime';
 import { forceMarginRefresh, findNoteMarkers } from './noteMarkers';
 
@@ -153,9 +153,7 @@ class LinkInlineWidget extends WidgetType {
     );
   }
   toDOM() {
-    const span = document.createElement('span');
-    span.className = 'mn-linktext';
-    span.textContent = this.displayText;
+    const span = createEl('span', { cls: 'mn-linktext', text: this.displayText });
     span.addEventListener('mousedown', (evt) => {
       // Prevent the editor from placing the caret here on click — this is a
       // navigation action, not a text-editing one, same intent as
@@ -165,7 +163,10 @@ class LinkInlineWidget extends WidgetType {
       evt.stopPropagation();
       const app = runtime.app;
       if (!app) return;
-      app.workspace.openLinkText(this.linkpath, this.sourcePath);
+      app.workspace.openLinkText(this.linkpath, this.sourcePath).catch((err: unknown) => {
+        console.error('Margin Notes: failed to open link', this.linkpath, err);
+        new Notice(`Margin Notes: couldn't open "${this.linkpath}".`);
+      });
     });
     return span;
   }

@@ -111,14 +111,10 @@ class NoteAnchorWidget extends WidgetType {
     return other.id === this.id && other.type === this.type && other.content === this.content;
   }
   toDOM() {
-    const span = document.createElement('span');
-    span.className = 'mn-anchor';
+    const span = createEl('span', { cls: 'mn-anchor' });
     span.dataset.noteId = String(this.id);
-    const sup = document.createElement('sup');
-    sup.className = 'mn-marker';
+    const sup = span.createEl('sup', { cls: 'mn-marker', text: String(this.id) });
     sup.style.color = noteTypeColor(this.type);
-    sup.textContent = String(this.id);
-    span.appendChild(sup);
     // Tapping/clicking the superscript itself reveals the note's own raw
     // `[mn.type: content]` text right where it already lives in the
     // document, with the caret placed at the START of the content — NOT a

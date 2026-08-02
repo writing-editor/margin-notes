@@ -71,25 +71,37 @@ feature that does:
   default.
 - **When it's sent:** only when you explicitly run the agent — never
   automatically, never on a timer, never on file open/save.
-- **API keys:** stored encrypted through your OS keychain when that's
-  genuinely available on your platform/session. When it isn't, the key is
-  stored in plain text in this plugin's `data.json`, and the settings tab
-  says so plainly rather than claiming otherwise.
-  - **If your vault is a git repository:** `.obsidian` is **not**
-    gitignored by Obsidian automatically — add it yourself if you don't
-    want a plaintext key committed.
+- **API keys:** stored in their own file, `api-keys.json`, next to (not
+  inside) this plugin's normal `data.json` — both live in
+  `.obsidian/plugins/margin-notes/`. This is deliberate: it means you can
+  gitignore just the one file with the keys in it, without also
+  gitignoring every other setting (spelling convention, density, agent
+  profile, margin width, etc.), which living in the shared `data.json`
+  would otherwise force. Keys are encrypted through your OS keychain
+  before being written there when that's genuinely available on your
+  platform/session; when it isn't, they're stored in plain text in that
+  same file, and the settings tab says so plainly rather than claiming
+  otherwise.
+  - **If your vault is a git repository:** add
+    `.obsidian/plugins/margin-notes/api-keys.json` to your `.gitignore`
+    — Obsidian does not gitignore anything for you by default. Only that
+    one file needs to be ignored; `data.json` and the rest of the plugin
+    can stay tracked normally.
   - **If you use Obsidian Sync:** Obsidian's own docs say the vault's
     `.obsidian` config folder syncs even though hidden folders are
     normally excluded — but the specific option that carries per-plugin
-    settings (`data.json`), "Installed/Active community plugin list," is
-    **off by default** and has to be turned on deliberately.
+    settings, "Installed/Active community plugin list," is **off by
+    default** and has to be turned on deliberately. Since the whole
+    plugin folder syncs as a unit when that option is on, `api-keys.json`
+    goes along with it — the file split above doesn't change this, it
+    only changes what a *git* ignore rule needs to cover.
   - **If you use a generic file-sync tool instead** (Dropbox, Syncthing,
     iCloud, a synced folder, etc.): these have no concept of "plugin
     settings" as a separate category — they sync `.obsidian` and
-    everything in it, including `data.json`, the same as any other file,
-    with no toggle to exclude it.
+    everything in it, `api-keys.json` included, the same as any other
+    file, with no toggle to exclude it.
   - Either way, if your key is only obscured with `plain:` (see above),
-    a sync path that includes `data.json` sends the plaintext key
+    a sync path that includes this file sends the plaintext key
     wherever that sync goes, not just between your own devices. Even a
     genuinely OS-keychain-encrypted key (`enc:`) is encrypted for the
     machine that made it — Electron's `safeStorage` is machine-bound, so
@@ -101,7 +113,9 @@ feature that does:
 
 ## Installing (no build needed)
 
-1. Create `<your-vault>/.obsidian/plugins/margin-notes/`.
+1. Create `<your-vault>/.obsidian/plugins/margin-notes/` (`.obsidian` is
+   the default name for a vault's config folder — if yours was renamed,
+   use that folder instead).
 2. Copy `manifest.json`, `main.js`, and `styles.css` into that folder.
 3. In Obsidian: Settings → Community plugins → reload, then enable "Margin Notes".
 

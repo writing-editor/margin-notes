@@ -26,7 +26,7 @@ function mnTypeCompletions(context: CompletionContext): CompletionResult | null 
     detail: t.label,
     apply: `[mn.${t.id}: `,
     render: (el: HTMLElement) => {
-      const swatch = document.createElement('span');
+      const swatch = el.createEl('span');
       Object.assign(swatch.style, {
         display: 'inline-block',
         width: '8px',
@@ -35,8 +35,7 @@ function mnTypeCompletions(context: CompletionContext): CompletionResult | null 
         borderRadius: '2px',
         background: t.color,
       });
-      el.appendChild(swatch);
-      el.appendChild(document.createTextNode(t.label));
+      el.appendText(t.label);
     },
   }));
 

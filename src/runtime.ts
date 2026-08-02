@@ -33,6 +33,6 @@ export function isMarginNotesEnabled(file: TFile | null): boolean {
   // frontmatter mode
   const key = settings.frontmatterKey.trim() || DEFAULT_SETTINGS.frontmatterKey;
   const cache = app.metadataCache.getFileCache(file);
-  const value = cache?.frontmatter?.[key];
+  const value: unknown = cache?.frontmatter?.[key];
   return value === true || value === 'true';
 }
