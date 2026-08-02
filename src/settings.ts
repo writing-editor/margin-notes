@@ -118,6 +118,17 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
   },
 };
 
+/**
+ * Uses the imperative `display()` API rather than Obsidian 1.13.0's
+ * declarative `getSettingDefinitions()`. That newer API needs
+ * minAppVersion >= 1.13.0, and several settings here are inherently
+ * dynamic (rows added/hidden per trigger mode, per-provider fields,
+ * agent profiles discovered from a vault folder at render time) rather
+ * than a static schema, so a straight migration isn't a drop-in. Per
+ * Obsidian's own guidance, `display()` remains supported indefinitely
+ * as a fallback — this is a deliberate deferral, not an oversight, and
+ * should be revisited if/when minAppVersion is raised to 1.13.0+.
+ */
 export class MarginNotesSettingTab extends PluginSettingTab {
   plugin: MarginNotesPlugin;
 
@@ -141,7 +152,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
 
     // ---------------------------------------------------------------- Notes
     new Setting(containerEl)
-      .setName('Margin notes')
+      .setName('Activation')
       .setHeading()
       .setDesc(
         'Margin notes only render for files that match the rule below. Everything else opens as a plain, ' +
@@ -205,7 +216,6 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         slider
           .setLimits(140, 360, 10)
           .setValue(s.marginWidth)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             s.marginWidth = value;
             await this.save();
@@ -225,7 +235,6 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 6, 0.1)
           .setValue(s.narrowPaneRatio)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             s.narrowPaneRatio = value;
             await this.save();
@@ -294,10 +303,9 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setName('Provider')
       .addDropdown((dd) => {
         AGENT_PROVIDERS.forEach((p) => dd.addOption(p.id, p.label));
-        dd.setValue(s.agent.provider).onChange(async (value) => {
+        dd.setValue(s.agent.provider).onChange((value) => {
           s.agent.provider = value as AgentProvider;
-          await this.save();
-          this.render();
+          void this.save().then(() => this.render());
         });
       });
 
@@ -398,9 +406,9 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         const names = listAgentNames(this.app, s.agent.agentsFolder);
         names.forEach((name) => dd.addOption(name, name));
         if (!names.includes(s.agent.selectedAgent) && names.length) s.agent.selectedAgent = names[0];
-        dd.setValue(s.agent.selectedAgent).onChange(async (value) => {
+        dd.setValue(s.agent.selectedAgent).onChange((value) => {
           s.agent.selectedAgent = value;
-          await this.save();
+          void this.save();
         });
       });
 

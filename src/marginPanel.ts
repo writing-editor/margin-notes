@@ -18,28 +18,21 @@ import { renderPlacementText } from './agents';
  * label the tiny badge has no room for anyway.
  *
  * Built via Obsidian's own `createSvg`/`createEl` element-creation methods
- * (available on every HTMLElement) rather than an innerHTML string. The
- * string was a fixed constant with no user input, so it was never an
+ * (available on every HTMLElement/SVGElement, per Obsidian's `Node`
+ * interface extension in obsidian.d.ts) rather than an innerHTML string.
+ * The string was a fixed constant with no user input, so it was never an
  * actual injection risk, but Obsidian's own reviewer/linter flags
  * innerHTML categorically since it can't tell "safe hardcoded constant"
  * apart from "unsafe interpolated string" — and separately prefers its
- * own createEl-family helpers over raw `document.createElement` so every
- * plugin's DOM construction goes through one consistent, typed API.
+ * own createEl-family helpers over raw `document.createElement`/
+ * `document.createElementNS` so every plugin's DOM construction goes
+ * through one consistent, typed API.
  */
 function appendTrashIcon(button: HTMLButtonElement): void {
   const svg = button.createSvg('svg', { attr: { viewBox: '0 0 24 24' } });
   const paths = ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13', 'M10 11v6', 'M14 11v6'];
-  // Obsidian's createEl/createSvg helpers are confirmed to extend
-  // HTMLElement's prototype (per Obsidian's own obsidian.d.ts); whether
-  // that extension also reaches SVGElement itself isn't something this
-  // plugin's build can verify against the real obsidian package, so each
-  // path is built via the standard, universally-available SVG DOM API
-  // (createElementNS + appendChild) directly on the already-created `svg`
-  // element, rather than chaining a second createSvg call on it.
   for (const d of paths) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', d);
-    svg.appendChild(path);
+    svg.createSvg('path', { attr: { d } });
   }
 }
 
@@ -615,7 +608,9 @@ class MarginColumn {
       this.removeLinkMarkup(marker);
       return;
     }
-    new ConfirmDeleteFileModal(app, dest.basename, () => this.deleteLinkedFile(marker, dest)).open();
+    new ConfirmDeleteFileModal(app, dest.basename, () => {
+      void this.deleteLinkedFile(marker, dest);
+    }).open();
   }
 
   private async deleteLinkedFile(marker: LinkMarker, dest: TFile) {
