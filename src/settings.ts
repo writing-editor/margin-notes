@@ -231,7 +231,6 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         slider
           .setLimits(100, 600, 10)
           .setValue(s.marginWidth)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             s.marginWidth = value;
             await this.save();
@@ -250,7 +249,6 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         slider
           .setLimits(0.6, 1.3, 0.05)
           .setValue(s.chipFontRatio)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             s.chipFontRatio = value;
             await this.save();

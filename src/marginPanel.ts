@@ -192,13 +192,12 @@ class MarginColumn {
   private companionLeaf: WorkspaceLeaf | null = null;
 
   constructor(private readonly view: EditorView) {
-    this.track = createEl('div', { cls: 'mn-margin-track' });
     // Appending inside .cm-scroller (not .cm-content) means the track scrolls
     // in lockstep with the text automatically — no manual scroll listener
     // needed, because both are laid out in the same scrolling coordinate
     // space. This is the trick that made the original app's manual
     // scroll-driven positionChips() unnecessary here.
-    view.scrollDOM.appendChild(this.track);
+    this.track = view.scrollDOM.createEl('div', { cls: 'mn-margin-track' });
     // Belt-and-suspenders for the narrow-pane gate (see render()):
     // ViewUpdate.geometryChanged SHOULD already catch a split-pane resize
     // (CM6 observes its own DOM element's size internally and sets its
