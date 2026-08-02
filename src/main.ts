@@ -1,7 +1,7 @@
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { EditorView } from '@codemirror/view';
 import { AgentSettings, DEFAULT_SETTINGS, MarginNotesSettings, MarginNotesSettingTab } from './settings';
-import { AgentProvider } from './agents';
+import { AgentProvider, seedAgentsFolder } from './agents';
 import { loadSecretsFile, saveSecretsFile } from './secretsFile';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { noteMarkerField, forceMarginRefresh } from './noteMarkers';
@@ -29,6 +29,13 @@ export default class MarginNotesPlugin extends Plugin {
     await this.loadSettings();
     runtime.app = this.app;
     runtime.settings = this.settings;
+
+    // One-time (per vault) creation of the agents folder with two starter
+    // profile files, so a fresh install has a visible, editable example of
+    // what an agent profile file looks like instead of two profiles baked
+    // invisibly into the plugin's code. No-ops if the folder already
+    // exists — see seedAgentsFolder's doc comment in agents.ts.
+    void seedAgentsFolder(this.app, this.settings.agent.agentsFolder);
 
     this.registerEditorExtension([noteMarkerField, linkMarkerField, marginPanel, mnTypeAutocomplete]);
     this.addSettingTab(new MarginNotesSettingTab(this.app, this));
@@ -102,6 +109,14 @@ export default class MarginNotesPlugin extends Plugin {
 
   applyMarginWidth() {
     document.body.style.setProperty('--mn-margin-width', `${this.settings.marginWidth}px`);
+    // calc() against Obsidian's own --font-text-size rather than a resolved
+    // pixel number here, so chips keep tracking the user's editor font size
+    // live if they change it later — no re-render/replug needed on this
+    // plugin's side for that to take effect.
+    document.body.style.setProperty(
+      '--mn-chip-font-size',
+      `calc(var(--font-text-size, 16px) * ${this.settings.chipFontRatio})`
+    );
   }
 
   async loadSettings() {

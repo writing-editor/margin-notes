@@ -295,6 +295,10 @@ class MarginColumn {
     // gate.
     this.view.scrollDOM.classList.toggle('mn-has-margin', chipsAllowed);
     this.view.scrollDOM.style.setProperty('--mn-margin-width', `${runtime.settings.marginWidth}px`);
+    this.view.scrollDOM.style.setProperty(
+      '--mn-chip-font-size',
+      `calc(var(--font-text-size, 16px) * ${runtime.settings.chipFontRatio})`
+    );
     if (!chipsAllowed) {
       // Chips just got suppressed (disabled entirely, or the pane shrank
       // below threshold, or mobile) — clean up anything left over from a

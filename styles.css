@@ -97,7 +97,13 @@
   border-left: 3px solid var(--text-accent);
   border-radius: 4px;
   padding: 4px 8px;
-  font-size: 12px;
+  /* Falls back to a fixed 12px only if the plugin never sets the variable
+     (e.g. CSS loaded before main.ts's applyMarginWidth() runs once on
+     load). Normally set from settings.ts's chipFontRatio, expressed as a
+     calc() against Obsidian's own editor font size so chips scale with
+     whatever font size the user has set for the editor rather than
+     staying fixed regardless of it. See applyMarginWidth() in main.ts. */
+  font-size: var(--mn-chip-font-size, 12px);
   line-height: 1.4;
   color: var(--text-normal);
   /* CRITICAL: without this, max-height below only constrains the CONTENT

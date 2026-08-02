@@ -54,25 +54,206 @@ export interface BundledAgent {
   prompt: string;
 }
 
-export const BUNDLED_AGENTS: BundledAgent[] = [
+/**
+ * Starter content for the two agent profiles written to `agentsFolder` the
+ * first time the plugin loads and finds that folder missing (see
+ * seedAgentsFolder below). These are NOT a hardcoded fallback the way an
+ * earlier version of this file kept them — once written, they're ordinary
+ * vault files: visible in the file explorer, editable, and safe to delete
+ * if the user doesn't want them. Deleting the .md file removes the agent;
+ * nothing in code re-adds it start-to-start. Kept here only as the literal
+ * text seeded onto disk once.
+ *
+ * Each prompt is BEHAVIOUR ONLY — what to look for, what to ignore, and
+ * how to judge severity/density. It deliberately says nothing about JSON
+ * shape, paragraphId, "quote", or "kind": buildPrompt() already prepends
+ * a full instructions block covering all of that (see buildPrompt() further
+ * down this file) and appends this text afterward as "Additional
+ * instructions from the user for this agent." A profile that tried to
+ * redefine output format itself (e.g. a bracket-note syntax, file-naming
+ * conventions, chat-vs-file workflow modes) would just compete with that
+ * real system prompt instead of improving it — the plugin already renders
+ * `content` as a margin note and handles file output on its own. These
+ * starters are written with the depth of a real editorial brief: an
+ * explicit taxonomy of what counts as an issue worth flagging, worked
+ * examples in miniature, and an explicit list of what NOT to flag — so a
+ * fresh install's first run reads like an experienced editor's pass, not a
+ * one-line hint. The third, "Editorial summary", is deliberately different
+ * in kind from the other two — see its own comment below — and exists to
+ * demonstrate the plugin's "report" placement pathway (a whole-document
+ * write-up saved to its own linked file, in `reportsFolder`) out of the
+ * box, since that pathway is otherwise invisible until an agent profile
+ * actually asks for it.
+ */
+const STARTER_AGENTS: BundledAgent[] = [
   {
     name: 'Continuity checker',
     prompt:
-      'Focus on continuity: contradictions in names, dates, physical descriptions, timelines, or established ' +
-      'facts versus earlier in the same text. Ignore style and prose quality entirely.',
+      'You are checking this text for places where it disagrees with itself \u2014 not grammar, not style, ' +
+      'only internal consistency. Read the whole text first; a detail that looks wrong early on may be ' +
+      'explained or resolved later, and you should not flag something that resolves itself further down.\n' +
+      '\n' +
+      'Flag these categories when you find them:\n' +
+      '1. Direct contradictions \u2014 two statements that cannot both be true (e.g. "the meeting is Tuesday" ' +
+      'stated once, "as agreed, we meet Wednesday" stated later, with no explanation for the change).\n' +
+      '2. Drifting facts \u2014 a name, date, number, age, title, or location that changes without the text ' +
+      'itself explaining why (a character who is 34 in one paragraph and 37 a few pages later with no time ' +
+      'skip mentioned; a total given as $40,000 in a summary and $45,000 in the breakdown beneath it).\n' +
+      '3. Numbers that do not add up \u2014 a stated total that does not match its listed parts, percentages ' +
+      'that do not sum to 100 where they should, or a count that does not match a later itemised list.\n' +
+      '4. Terminology drift \u2014 what looks like the same person, place, or thing referred to by different ' +
+      'names in a way that reads as an error rather than deliberate variation (e.g. "the Steering ' +
+      'Committee" and "the Advisory Board" both used for what seems to be one body). Do not flag ' +
+      'intentional variation such as a nickname used affectionately alongside a formal name \u2014 only flag it ' +
+      'when the text gives no sign the switch is deliberate.\n' +
+      '5. Timeline and sequence errors \u2014 events referenced out of an order the text itself has already ' +
+      'established, or a stated duration that does not match the start and end points described.\n' +
+      '6. Typos that change a fact, not just cosmetic ones \u2014 only flag a typo here if it alters a name, ' +
+      'number, or meaning (e.g. a transposed digit that changes 1,200 into what was clearly meant to be ' +
+      '12,000). Leave purely cosmetic typos (a missing comma, a doubled word) alone entirely \u2014 that is a ' +
+      'different kind of pass, not this one.\n' +
+      '\n' +
+      'When you flag an inconsistency, the note you write should name BOTH sides of the conflict, not just ' +
+      'describe the paragraph you are anchored to \u2014 e.g. "Stated as $40,000 here, but the breakdown later ' +
+      'sums to $45,000" is a complete note; "budget figure looks off" is not, because it does not tell the ' +
+      'reader what it conflicts with or where. Where you can, name a rough location for the other half of ' +
+      'the conflict (a heading, a chapter, "earlier, where the character is introduced") so the reader can ' +
+      'find it without searching the whole document again. If a genuine conflict exists but you cannot tell ' +
+      'which side is the intended, correct one, say so in the note rather than silently assuming \u2014 your job ' +
+      'is to flag the disagreement, not to decide which version is right.\n' +
+      '\n' +
+      'Do not flag: intentional stylistic repetition, deliberate ambiguity the author has clearly signalled ' +
+      'on purpose, two passages that restate the same fact in different words without actually changing it, ' +
+      'or a detail that is simply incomplete rather than contradictory (missing information is not the same ' +
+      'as conflicting information). Ignore prose quality, word choice, and grammar entirely \u2014 a sentence can ' +
+      'be awkward and still perfectly self-consistent, and that is not your concern here. Prefer fewer, ' +
+      'well-substantiated flags over many speculative ones: a maybe-inconsistency you are not confident about ' +
+      'is better left unflagged than reported as a false positive.',
   },
   {
     name: 'Line editor',
     prompt:
-      'Focus on prose craft: sentences that are unclear, overlong, or repeat a word/construction used nearby, ' +
-      'and paragraphs whose pacing drags. Do not comment on plot or continuity.',
+      'You are line-editing this text for prose craft \u2014 not continuity, not plot, only how the sentences ' +
+      'themselves read. Preserve the author\u2019s voice, tone, and rhetorical style throughout: your job is to ' +
+      'fix what is actually broken or genuinely working against the writing, not to sand the piece down ' +
+      'toward a generic "correct" style. If a sentence is unconventional but clearly a deliberate choice ' +
+      'that is working, leave it alone.\n' +
+      '\n' +
+      'Look for and flag:\n' +
+      '- Sentences that are genuinely unclear \u2014 a reader would have to re-read it to parse what it means, ' +
+      'not just that it could theoretically be phrased more elegantly.\n' +
+      '- Overlong or overloaded sentences where the length itself is costing clarity \u2014 several independent ' +
+      'ideas crammed into one sentence with the connections between them left implicit.\n' +
+      '- Repeated words or constructions used again nearby in a way that reads as an oversight rather than ' +
+      'intentional rhythm (e.g. the same slightly unusual verb twice in adjacent sentences, or the same ' +
+      'sentence-opening pattern three times in a short span). If the same issue recurs across many ' +
+      'paragraphs \u2014 a crutch word the author leans on throughout \u2014 do not give every single instance its ' +
+      'own note; flag it once, on its first or clearest occurrence, and name the other places it recurs so ' +
+      'the author can see the pattern without wading through a repeated note on every page.\n' +
+      '- Paragraphs whose pacing drags \u2014 momentum that stalls under excess qualification, throat-clearing ' +
+      'before the actual point, or a paragraph that could make its point in half the space without losing ' +
+      'anything the reader needs.\n' +
+      '- Genuine grammar, punctuation, and mechanical errors \u2014 subject-verb agreement, tense that slips ' +
+      'mid-passage without reason, a dangling modifier, a run-on that actually confuses rather than just ' +
+      'runs long by choice.\n' +
+      '\n' +
+      'A single paragraph legitimately can have more than one distinct issue \u2014 a garbled sentence and a ' +
+      'separate pacing problem two lines later are two different notes, not one combined note trying to ' +
+      'cover both. But do not manufacture a second note out of the same underlying issue just to raise the ' +
+      'count, and do not repeat the same point twice for one paragraph in different words.\n' +
+      '\n' +
+      'Write each note as something the author can act on \u2014 name the specific problem ("this clause buries ' +
+      'the subject three lines in" is useful; "awkward phrasing" is not) rather than a vague verdict. Prefer ' +
+      'quoting or clearly pointing at the specific phrase the issue is about rather than describing the ' +
+      'whole paragraph in general terms, so the author can find the exact spot at a glance.\n' +
+      '\n' +
+      'Do not flag: continuity or factual issues (a different pass handles that), regional spelling choices ' +
+      '(US vs UK) that are simply consistent with how the rest of the piece spells things, a sentence that is ' +
+      'merely a different style choice than you personally would have made, or anything that is already ' +
+      'working \u2014 do not rewrite a correct sentence just to prefer a different correct way of saying the same ' +
+      'thing. If it is genuinely worth a line-editor\u2019s attention, it is worth a note; but do not invent ' +
+      'issues that are not really there just to seem thorough.',
+  },
+  {
+    name: 'Editorial summary',
+    prompt:
+      'Your job is to produce ONE whole-document editorial summary, not a scattering of small margin notes. ' +
+      'Where the other agents in this vault comment on individual paragraphs, you are reading the ENTIRE ' +
+      'text and reporting back on it as a whole \u2014 think of yourself as a developmental editor writing a ' +
+      'letter to the author after a full read-through, not a copyeditor marking up a page.\n' +
+      '\n' +
+      'This means you should return your finding as a "report" placement (long-form content that becomes ' +
+      'its own linked file), not an "inline" one \u2014 a whole-document assessment is exactly the case the ' +
+      'system instructions describe as genuinely report-sized, not a short remark that belongs next to one ' +
+      'paragraph. In almost every run you should produce exactly ONE report placement for the whole text, ' +
+      'anchored at whichever paragraph best represents the document\u2019s opening or overall subject (the ' +
+      'first substantive paragraph is usually right). Do not also scatter additional small inline notes ' +
+      'alongside it \u2014 if something is worth a one-line remark at a specific spot, that is a different ' +
+      'agent\u2019s job, not this one\u2019s. The short label you give the placement (its "content" field) becomes ' +
+      'the visible link text in the document, so make it a natural, specific phrase \u2014 e.g. "editorial notes ' +
+      'on structure and pacing" rather than a generic "notes" or "summary".\n' +
+      '\n' +
+      'The long-form report itself (the "reportContent" field) should read as a structured but genuinely ' +
+      'useful editorial letter, written in your own Markdown headings so it is easy to scan once opened. ' +
+      'Cover, in roughly this order, whichever of these sections actually apply to what you read \u2014 skip a ' +
+      'section entirely rather than padding it out if the text gives you nothing real to say there:\n' +
+      '- **Overall impression** \u2014 two or three sentences on what the piece is doing and how well it is ' +
+      'working as a whole, in plain terms an author could act on.\n' +
+      '- **Structure and pacing** \u2014 where the piece is well-shaped versus where it sags, rushes, or loses ' +
+      'the thread; whether the ordering of ideas/scenes serves the piece or fights it.\n' +
+      '- **Strengths worth keeping** \u2014 specific things that are genuinely working, named specifically ' +
+      'enough that the author knows what not to accidentally edit away later. A summary that is all ' +
+      'criticism is not more useful for being harsher \u2014 name what is landing, not just what isn\u2019t.\n' +
+      '- **Recurring issues** \u2014 patterns that show up more than once across the piece (a habit, a gap, a ' +
+      'structural weak point) rather than one-off sentence-level problems, which belong to a line-level pass ' +
+      'instead. Point to where in the text these show up (a heading, a rough location, a quoted phrase) so ' +
+      'the author can find them, but do not try to list every single instance \u2014 that is what inline notes ' +
+      'are for; this is about the pattern.\n' +
+      '- **Open questions for the author** \u2014 genuine ambiguities you noticed that only the author can ' +
+      'resolve (an intention you cannot infer, a choice that could go either way), phrased as questions, not ' +
+      'verdicts.\n' +
+      '\n' +
+      'Keep the tone direct and specific, the way a good editor talks to a writer they respect \u2014 candid ' +
+      'about what is not working, but never dismissive, and always oriented toward what the author can ' +
+      'actually do next. Do not pad the report with generic writing advice that is not actually about this ' +
+      'text; every point should be something you noticed IN this document, not boilerplate that could be ' +
+      'pasted into a summary of any piece of writing.',
   },
 ];
+
+/**
+ * Runs once per vault, called from main.ts's onload(). If `agentsFolder`
+ * doesn't exist yet (fresh install, or a vault that predates this
+ * behaviour), creates it and writes each of STARTER_AGENTS into it as a
+ * plain markdown file — one file per agent, filename = agent name. This
+ * both (a) makes it obvious to the user where agent profiles live and
+ * that this folder is plugin-managed, and (b) means the "default" agents
+ * are just regular files: rename, edit, or delete them like any other
+ * note, and — unlike the old code-level BUNDLED_AGENTS fallback — a
+ * deleted starter agent stays gone; it won't reappear because there's no
+ * separate hardcoded copy backing it once the file exists.
+ *
+ * Deliberately does nothing if the folder already exists, even if one or
+ * both starter files are individually missing from it — that's the "user
+ * deleted the one they didn't want" case this is meant to respect, not a
+ * broken install to repair.
+ */
+export async function seedAgentsFolder(app: App, agentsFolder: string): Promise<void> {
+  const folder = agentsFolder.trim().replace(/^\/+|\/+$/g, '');
+  if (!folder) return; // empty path — folder-per-agent-profile is opt-in, not forced
+  const existing = app.vault.getAbstractFileByPath(folder);
+  if (existing) return; // already created (or a same-named file is in the way) — leave it alone
+  await ensureFolderExists(app, `${folder}/placeholder`);
+  for (const agent of STARTER_AGENTS) {
+    const path = `${folder}/${agent.name}.md`;
+    if (app.vault.getAbstractFileByPath(path)) continue;
+    await app.vault.create(path, `${agent.prompt}\n`);
+  }
+}
 
 /** Names only — cheap enough to call synchronously from the settings tab render. */
 export function listAgentNames(app: App, agentsFolder: string): string[] {
   const names = new Map<string, true>();
-  for (const a of BUNDLED_AGENTS) names.set(a.name, true);
   const folder = agentsFolder.trim().replace(/^\/+|\/+$/g, '');
   if (folder) {
     for (const f of app.vault.getMarkdownFiles()) {
@@ -82,17 +263,17 @@ export function listAgentNames(app: App, agentsFolder: string): string[] {
   return Array.from(names.keys());
 }
 
-/** Vault file of the same name shadows a bundled profile. Reads the file only when actually running. */
+/** Reads the agent profile's prompt text straight from its vault file. */
 export async function loadAgentPrompt(app: App, agentsFolder: string, name: string): Promise<string> {
   const folder = agentsFolder.trim().replace(/^\/+|\/+$/g, '');
   if (folder) {
     const match = app.vault.getMarkdownFiles().find((f) => f.basename === name && (f.path === folder || f.path.startsWith(folder + '/')));
     if (match) return await app.vault.read(match);
   }
-  const bundled = BUNDLED_AGENTS.find((a) => a.name === name);
-  if (bundled) return bundled.prompt;
-  throw new Error(`No agent profile named "${name}" found (checked bundled profiles and the ${folder || '(unset)'} folder).`);
+  throw new Error(`No agent profile named "${name}" found in the ${folder || '(unset)'} folder.`);
 }
+
+
 
 // ── Plan §2: AI-authored linked reports ────────────────────────────────
 

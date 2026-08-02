@@ -12,7 +12,7 @@ export interface AgentSettings {
   modelByProvider: Record<AgentProvider, string>;
   ollamaUrl: string;
   agentsFolder: string;
-  /** Name of the last agent profile used (bundled or from agentsFolder) — remembered across restarts. */
+  /** Name of the last agent profile used, read from agentsFolder — remembered across restarts. */
   selectedAgent: string;
   scope: AgentScope;
   /**
@@ -40,6 +40,17 @@ export interface MarginNotesSettings {
   frontmatterKey: string;
   folderPath: string;
   marginWidth: number;
+  /**
+   * Chip text size, expressed as a RATIO against Obsidian's own editor font
+   * size (--font-text-size) rather than a fixed pixel value — so chips
+   * scale automatically if the user changes their editor font size instead
+   * of staying fixed regardless of it. 1.0 would match the main text
+   * exactly; the default sits a bit below that since chips are secondary,
+   * margin-adjacent content, not body text. Applied via the
+   * --mn-chip-font-size CSS variable — see applyMarginWidth() in main.ts
+   * and .mn-chip in styles.css.
+   */
+  chipFontRatio: number;
   /**
    * The margin chip column hides itself entirely once the editor pane's own
    * width drops below `marginWidth * narrowPaneRatio` — i.e. this is a
@@ -85,6 +96,10 @@ export const DEFAULT_SETTINGS: MarginNotesSettings = {
   frontmatterKey: 'margin-notes',
   folderPath: 'book',
   marginWidth: 220,
+  // Chip font size as a ratio of the editor's own font size (see interface
+  // doc comment). 0.9 reads as clearly secondary to the main text without
+  // being hard to read.
+  chipFontRatio: 0.9,
   // Chips hide once the pane is narrower than marginWidth * this ratio (see
   // interface doc comment). 3.0 means: once the pane is less than 3x the
   // margin's own width, chips hide — at marginWidth's default of 220px
@@ -214,10 +229,30 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setDesc('Space (in pixels) reserved on the right for note chips.')
       .addSlider((slider) =>
         slider
-          .setLimits(140, 360, 10)
+          .setLimits(100, 600, 10)
           .setValue(s.marginWidth)
+          .setDynamicTooltip()
           .onChange(async (value) => {
             s.marginWidth = value;
+            await this.save();
+            this.plugin.applyMarginWidth();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Margin note font size')
+      .setDesc(
+        'Size of the text inside margin note chips, as a ratio of your editor\u2019s own font size \u2014 ' +
+          '0.9x means chips render at 90% of the main text size. Scales automatically if you change your ' +
+          'editor font size, rather than staying fixed.'
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.6, 1.3, 0.05)
+          .setValue(s.chipFontRatio)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            s.chipFontRatio = value;
             await this.save();
             this.plugin.applyMarginWidth();
           })
@@ -401,7 +436,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Agent profile')
-      .setDesc(`Bundled profiles, plus any markdown file in "${s.agent.agentsFolder}/" (filename shadows a bundled profile of the same name).`)
+      .setDesc(`Each markdown file in "${s.agent.agentsFolder}/" is a profile \u2014 pick which one runs.`)
       .addDropdown((dd) => {
         const names = listAgentNames(this.app, s.agent.agentsFolder);
         names.forEach((name) => dd.addOption(name, name));
@@ -414,7 +449,16 @@ export class MarginNotesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Agent profiles folder')
-      .setDesc('Vault-relative. Each markdown file in here is an agent profile; its content is the instructions.')
+      .setDesc(
+        'Vault-relative folder (created at your vault root by default). Each markdown file in here is an ' +
+          'agent profile \u2014 its content is the instructions given to the model, and its filename is the ' +
+          'profile\u2019s name in the dropdown above. On first install this folder is created for you with three ' +
+          'starter profiles: \u201cContinuity checker\u201d and \u201cLine editor\u201d write short inline margin notes, ' +
+          'and \u201cEditorial summary\u201d writes one whole-document report to its own linked file (see the ' +
+          '\u201cReports folder\u201d setting below) so you can see both note styles the plugin supports. Edit or ' +
+          'delete any of them freely, or add your own .md file here to create a new profile. Renaming this ' +
+          'setting only changes where the plugin looks; it won\u2019t move existing files for you.'
+      )
       .addText((text) =>
         text.setValue(s.agent.agentsFolder).onChange(async (value) => {
           s.agent.agentsFolder = value.trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.agent.agentsFolder;
@@ -422,6 +466,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
           this.render();
         })
       );
+
 
     new Setting(containerEl)
       .setName('Reports folder')
