@@ -159,13 +159,17 @@ export function layoutMarginItems(
   const naturalHeightsByChip = new Map<HTMLDivElement, number>();
   if (isNewChip.size > 0) {
     const measureHost = track.ownerDocument.createElement('div');
-    measureHost.style.position = 'absolute';
-    measureHost.style.visibility = 'hidden';
-    measureHost.style.pointerEvents = 'none';
-    // Same width as the live track — a chip's wrapped-text height depends
-    // on its available width, so measuring in a container of a different
-    // width would give the wrong natural height.
-    measureHost.style.width = `${track.clientWidth}px`;
+    // setCssStyles (not direct .style.x assignment) per Obsidian's plugin
+    // guidelines — obsidianmd/no-static-styles-assignment.
+    measureHost.setCssStyles({
+      position: 'absolute',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+      // Same width as the live track — a chip's wrapped-text height
+      // depends on its available width, so measuring in a container of a
+      // different width would give the wrong natural height.
+      width: `${track.clientWidth}px`,
+    });
     track.ownerDocument.body.appendChild(measureHost);
     for (const chip of isNewChip) measureHost.appendChild(chip);
     for (const chip of isNewChip) naturalHeightsByChip.set(chip, chip.offsetHeight);
@@ -197,7 +201,7 @@ export function layoutMarginItems(
     const chip = chips[i];
     let top = anchorTops[i];
     if (top < lastBottom + CHIP_GAP) top = lastBottom + CHIP_GAP;
-    chip.style.top = `${top}px`;
+    chip.setCssStyles({ top: `${top}px` });
 
     const nextTop = i + 1 < items.length ? anchorTops[i + 1] : Infinity;
     const availableHeight = nextTop - top - CHIP_GAP;

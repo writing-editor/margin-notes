@@ -541,7 +541,7 @@ class MarginColumn {
 
   private buildLinkChip(marker: LinkMarker, prefetched?: { el: HTMLElement; component: Component }): HTMLDivElement {
     const chip = createEl('div', { cls: 'mn-chip mn-chip-link' });
-    chip.style.borderLeftColor = LINK_CHIP_COLOR;
+    chip.setCssStyles({ borderLeftColor: LINK_CHIP_COLOR });
     chip.dataset.linkId = marker.id;
 
     chip.createEl('span', { cls: 'mn-chip-label', text: 'link' });
@@ -801,7 +801,7 @@ class MarginColumn {
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
     const chip = createEl('div', { cls: 'mn-chip' });
-    chip.style.borderLeftColor = noteTypeColor(marker.type);
+    chip.setCssStyles({ borderLeftColor: noteTypeColor(marker.type) });
     chip.dataset.noteId = String(marker.id);
 
     chip.createEl('span', { cls: 'mn-chip-label', text: `${marker.id}. ` });

@@ -114,7 +114,7 @@ class NoteAnchorWidget extends WidgetType {
     const span = createEl('span', { cls: 'mn-anchor' });
     span.dataset.noteId = String(this.id);
     const sup = span.createEl('sup', { cls: 'mn-marker', text: String(this.id) });
-    sup.style.color = noteTypeColor(this.type);
+    sup.setCssStyles({ color: noteTypeColor(this.type) });
     // Tapping/clicking the superscript itself reveals the note's own raw
     // `[mn.type: content]` text right where it already lives in the
     // document, with the caret placed at the START of the content — NOT a
