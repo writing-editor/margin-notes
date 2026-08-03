@@ -139,9 +139,83 @@ function mergeByFrom(a: MarginItem[], b: MarginItem[]): MarginItem[] {
   return out;
 }
 
+// How long to hold off rebuilding the margin column after a doc-changing
+// keystroke, in ms — only applies to changes isDocChangeLayoutRelevant()
+// (below) flags as actually able to move/add/remove a chip; a plain
+// same-line character edit that isn't near a marker never reaches this at
+// all (see the ViewPlugin's update()), so this only ever debounces a
+// genuine burst of marker/newline edits rather than every keystroke.
+const TYPING_DEBOUNCE_MS = 200;
+
+// Safety-net interval, in ms, for a background refresh independent of any
+// specific trigger. isDocChangeLayoutRelevant() is a heuristic over each
+// transaction's inserted/deleted text — deliberately cheap, which means
+// deliberately not exhaustive. If some edit path ever slips past it
+// (an edge case in how CodeMirror batches/represents a particular kind of
+// change, a future marker syntax this heuristic wasn't updated for, etc.),
+// this periodic refresh is what self-corrects the column within a bounded
+// worst-case delay instead of leaving it stale until some unrelated trigger
+// (scroll, resize, selection move) happens to fire. 4s is long enough to
+// cost nothing while idle or mid-typing, short enough that a missed
+// condition is never wrong for more than a glance.
+const SAFETY_NET_INTERVAL_MS = 4000;
+
+/**
+ * Cheap pre-filter for whether a doc-changing transaction could possibly
+ * need a margin-column rebuild at all, checked BEFORE any debounce timer
+ * is even armed (see the ViewPlugin's update() below) — most individual
+ * keystrokes (typing a normal character in the middle of a line, nowhere
+ * near any marker) touch neither a line count nor any marker-relevant
+ * character, so they can be skipped entirely with zero rebuild, zero
+ * debounce timer churn, and zero rescan of the document.
+ *
+ * Deliberately over-inclusive rather than exact: this only looks at the
+ * raw characters/line-count of what changed, not whether a full marker
+ * scan would actually find something new. A false positive here just
+ * costs one debounced rebuild that turns out to reconfirm the same layout
+ * (cheap, correct); a false negative would leave the column stale, which
+ * is why every check below errs toward "yes, that counts":
+ *
+ * - Any inserted or deleted text containing '\n' — a line count change
+ *   shifts every marker anchor below it, even ones the edit itself didn't
+ *   touch (this is the single most common layout-relevant edit: pressing
+ *   Enter).
+ * - Any inserted or deleted text containing '[' or ']' — the only
+ *   characters MN_RE (note markers) and LINK_RE (link markers) can start
+ *   or end on. An edit that can't possibly create, remove, or resize a
+ *   bracketed span can't change which markers exist.
+ */
+function isDocChangeLayoutRelevant(update: ViewUpdate): boolean {
+  let relevant = false;
+  update.changes.iterChanges((_fromA, _toA, _fromB, _toB, inserted) => {
+    if (relevant) return; // already found a reason; skip scanning the rest
+    const insertedText = inserted.toString();
+    if (/[\n[\]]/.test(insertedText)) {
+      relevant = true;
+      return;
+    }
+    // Deleted text isn't available as a string directly from iterChanges
+    // (it only gives us the INSERTED Text) — but a deletion that removed a
+    // newline or bracket is exactly as layout-relevant as inserting one,
+    // so read it from the pre-change doc via the fromA/toA range.
+    const deletedText = update.startState.doc.sliceString(_fromA, _toA);
+    if (/[\n[\]]/.test(deletedText)) {
+      relevant = true;
+    }
+  });
+  return relevant;
+}
+
 class MarginColumn {
   private readonly track: HTMLDivElement;
   private rafHandle: number | null = null;
+  private debounceHandle: number | null = null;
+  // Belt-and-suspenders background refresh — see SAFETY_NET_INTERVAL_MS's
+  // doc comment. Scheduled with `immediate: false` so it competes for the
+  // same debounce slot as a real edit rather than forcing its own
+  // rebuild mid-keystroke; if nothing's actually changed, render() just
+  // reconfirms the current layout at negligible cost.
+  private safetyNetHandle: number | null = null;
   private readonly resizeObserver: ResizeObserver;
   // Tracks the current preview-update subscription per link marker id, so
   // rebuilding the same marker's chip on a later render() pass can
@@ -190,6 +264,19 @@ class MarginColumn {
   // must re-validate it against the workspace's current leaves first (see
   // openInCompanionSplit()) rather than trusting the reference alone.
   private companionLeaf: WorkspaceLeaf | null = null;
+  // Cached result of the mobile/narrow-pane gate (see updateChipsAllowed()).
+  // Deliberately NOT recomputed inside every render() pass — render() also
+  // runs on every debounced keystroke, and re-measuring clientWidth there
+  // ties this gate's outcome to whatever the pane's width happens to be at
+  // that exact moment, which can visibly flicker independently of any real
+  // width change (e.g. while text is still reflowing mid-edit). This value
+  // only changes in response to an actual width-changing event — window
+  // resize/maximize, a sidebar opening/closing, a new pane splitting in
+  // beside this one — via the ResizeObserver in the constructor (the sole
+  // trigger; see its own comment for why CM6's geometryChanged flag is
+  // deliberately NOT used here despite looking like a fit), never as a
+  // side effect of typing.
+  private chipsAllowed = true;
 
   constructor(private readonly view: EditorView) {
     // Appending inside .cm-scroller (not .cm-content) means the track scrolls
@@ -198,22 +285,112 @@ class MarginColumn {
     // space. This is the trick that made the original app's manual
     // scroll-driven positionChips() unnecessary here.
     this.track = view.scrollDOM.createEl('div', { cls: 'mn-margin-track' });
-    // Belt-and-suspenders for the narrow-pane gate (see render()):
-    // ViewUpdate.geometryChanged SHOULD already catch a split-pane resize
-    // (CM6 observes its own DOM element's size internally and sets its
-    // Geometry flag on change), but that's an internal implementation
-    // detail we don't want this feature silently depending on. Observing
-    // scrollDOM directly here guarantees a resize across the
-    // marginWidth * narrowPaneRatio boundary always triggers a re-render
-    // and correctly shows/hides the chip column, regardless of whether
-    // CM6's own flag happens to fire for a given resize path (e.g.
-    // resizing without any accompanying doc/selection/viewport change).
-    this.resizeObserver = new ResizeObserver(() => this.schedule());
+    // ResizeObserver on scrollDOM is the ONLY place chipsAllowed gets
+    // recomputed from a live width measurement (see updateChipsAllowed()) —
+    // it fires precisely on a real box-size change of the pane itself
+    // (window resize/maximize, sidebar toggle, a sibling pane splitting in)
+    // and nothing else. CM6's own ViewUpdate.geometryChanged flag looks
+    // like it should cover the same cases, but per CM6's docs it ALSO
+    // fires on ordinary typing that changes content height (e.g. a line
+    // wrapping) — using it here previously caused chips to vanish while
+    // typing (a live re-measurement + immediate rebuild racing against
+    // the doc's own fast-changing state on every such keystroke). This
+    // ResizeObserver is deliberately the only live-resize trigger now.
+    this.resizeObserver = new ResizeObserver(() => {
+      this.updateChipsAllowed();
+      this.schedule();
+    });
     this.resizeObserver.observe(view.scrollDOM);
-    this.schedule();
+    this.updateChipsAllowed();
+    this.schedule(); // initial paint — immediate, nothing to debounce yet
+
+    // Safety-net background refresh — see SAFETY_NET_INTERVAL_MS's doc
+    // comment for why this exists alongside the targeted triggers above.
+    // Uses `immediate: false` (the debounced path) so it never interrupts
+    // active typing with its own forced rebuild — it just joins whatever
+    // debounce window may already be pending, or starts one that fires
+    // after the normal TYPING_DEBOUNCE_MS if nothing else is happening.
+    const win = view.dom.ownerDocument.defaultView ?? window;
+    this.safetyNetHandle = win.setInterval(() => this.schedule(false), SAFETY_NET_INTERVAL_MS);
   }
 
-  schedule() {
+  /**
+   * Recomputes and caches whether the chip column is allowed to show at
+   * all right now (see the `chipsAllowed` field's own doc comment for why
+   * this is split out from render() rather than inlined there). Also
+   * applies the `mn-has-margin` class immediately here — that CSS class is
+   * what actually reserves/releases the editor's margin-right space, so it
+   * needs to flip in lockstep with this check, not lag behind it until the
+   * next debounced render() happens to run.
+   */
+  updateChipsAllowed() {
+    const info = this.view.state.field(editorInfoField, false);
+    const file = info?.file ?? null;
+    const enabled = isMarginNotesEnabled(file);
+
+    // Mobile check first (cheap, no DOM measurement needed) — Platform.
+    // isMobile covers phones specifically (Obsidian gives tablets the
+    // desktop-style layout, so this deliberately does NOT also gate on
+    // Platform.isTablet).
+    const mobileBlocked = runtime.settings.disableChipsOnMobile && Platform.isMobile;
+
+    // Pane-width check: view.scrollDOM's own clientWidth is the actual
+    // rendered width of THIS editor pane specifically — reading it here
+    // (rather than window.innerWidth) is what makes a split-pane layout
+    // correctly narrow just the half that's actually narrow, without
+    // affecting a sibling pane that still has room. This compares against
+    // marginWidth * narrowPaneRatio rather than a fixed pixel number, so
+    // the threshold scales correctly with whatever marginWidth the user
+    // has actually configured (see settings.ts's doc comment on
+    // narrowPaneRatio for why a fixed number doesn't work well here).
+    // ratio <= 0 means "never hide for width".
+    const ratio = runtime.settings.narrowPaneRatio;
+    const paneWidth = this.view.scrollDOM.clientWidth;
+    const paneTooNarrow = ratio > 0 && paneWidth < runtime.settings.marginWidth * ratio;
+
+    this.chipsAllowed = enabled && !mobileBlocked && !paneTooNarrow;
+
+    // mn-has-margin toggles on chipsAllowed, not on `enabled` alone — this
+    // class is what reserves the CSS padding/margin space for the chip
+    // column via --mn-margin-width. If chips are suppressed for width/
+    // mobile reasons but this class stayed on anyway, the pane would
+    // reserve empty space for nothing; basing it on chipsAllowed instead
+    // means that reservation correctly disappears too, giving the narrow
+    // pane's prose its full width back — which is the whole point of this
+    // gate.
+    this.view.scrollDOM.classList.toggle('mn-has-margin', this.chipsAllowed);
+    this.view.scrollDOM.style.setProperty('--mn-margin-width', `${runtime.settings.marginWidth}px`);
+    this.view.scrollDOM.style.setProperty(
+      '--mn-chip-font-size',
+      `calc(var(--font-text-size, 16px) * ${runtime.settings.chipFontRatio})`
+    );
+  }
+
+  /**
+   * @param immediate When false (the default caller for doc changes — see
+   * marginPanel's update() below), a pending rebuild is debounced by
+   * TYPING_DEBOUNCE_MS and re-armed on every call, so a fast run of
+   * keystrokes collapses into a single rebuild once typing actually
+   * pauses instead of one full rebuild per character. When true (scroll,
+   * resize, non-typing selection moves), the rebuild is scheduled on the
+   * very next animation frame as before — those triggers don't come in
+   * keystroke-speed bursts, and users expect the column to track them
+   * without a visible lag.
+   */
+  schedule(immediate = true) {
+    if (!immediate) {
+      const win = this.view.dom.ownerDocument.defaultView ?? window;
+      if (this.debounceHandle !== null) win.clearTimeout(this.debounceHandle);
+      this.debounceHandle = win.setTimeout(() => {
+        this.debounceHandle = null;
+        this.scheduleFrame();
+      }, TYPING_DEBOUNCE_MS);
+      return;
+    }
+    this.scheduleFrame();
+  }
+
+  private scheduleFrame() {
     if (this.rafHandle !== null) return;
     // window.requestAnimationFrame (not the bare global) matters specifically
     // for Obsidian's popout windows: a popout is a separate browser window
@@ -250,55 +427,12 @@ class MarginColumn {
     const myGeneration = ++this.renderGeneration;
     const info = this.view.state.field(editorInfoField, false);
     const file = info?.file ?? null;
-    const enabled = isMarginNotesEnabled(file);
 
-    // Narrow-pane / mobile gate. This ONLY affects the chip column built by
-    // THIS class — noteMarkerField's superscript numbers and
-    // linkMarkerField's underlined inline link text are separate CM6
-    // StateFields that keep rendering completely unaffected by any of
-    // this, on any pane width, on any platform. That split (chips here vs.
-    // inline decorations in their own StateFields) is exactly what makes
-    // this gate simple: there's no shared rendering path to carefully
-    // thread a "skip this part" flag through, we just don't build a track
-    // at all.
-    //
-    // Mobile check first (cheap, no DOM measurement needed) — Platform.
-    // isMobile covers phones specifically (Obsidian gives tablets the
-    // desktop-style layout, so this deliberately does NOT also gate on
-    // Platform.isTablet).
-    const mobileBlocked = runtime.settings.disableChipsOnMobile && Platform.isMobile;
-
-    // Pane-width check: view.scrollDOM's own clientWidth is the actual
-    // rendered width of THIS editor pane specifically — reading it here
-    // (rather than window.innerWidth) is what makes a split-pane layout
-    // correctly narrow just the half that's actually narrow, without
-    // affecting a sibling pane that still has room. This compares against
-    // marginWidth * narrowPaneRatio rather than a fixed pixel number, so
-    // the threshold scales correctly with whatever marginWidth the user
-    // has actually configured (see settings.ts's doc comment on
-    // narrowPaneRatio for why a fixed number doesn't work well here).
-    // ratio <= 0 means "never hide for width".
-    const ratio = runtime.settings.narrowPaneRatio;
-    const paneWidth = this.view.scrollDOM.clientWidth;
-    const paneTooNarrow = ratio > 0 && paneWidth < runtime.settings.marginWidth * ratio;
-
-    const chipsAllowed = enabled && !mobileBlocked && !paneTooNarrow;
-
-    // mn-has-margin toggles on chipsAllowed, not on `enabled` alone — this
-    // class is what reserves the CSS padding/margin space for the chip
-    // column via --mn-margin-width. If chips are suppressed for width/
-    // mobile reasons but this class stayed on anyway, the pane would
-    // reserve empty space for nothing; basing it on chipsAllowed instead
-    // means that reservation correctly disappears too, giving the narrow
-    // pane's prose its full width back — which is the whole point of this
-    // gate.
-    this.view.scrollDOM.classList.toggle('mn-has-margin', chipsAllowed);
-    this.view.scrollDOM.style.setProperty('--mn-margin-width', `${runtime.settings.marginWidth}px`);
-    this.view.scrollDOM.style.setProperty(
-      '--mn-chip-font-size',
-      `calc(var(--font-text-size, 16px) * ${runtime.settings.chipFontRatio})`
-    );
-    if (!chipsAllowed) {
+    // The mobile/narrow-pane gate itself is NOT recomputed here — see
+    // updateChipsAllowed() and the `chipsAllowed` field's doc comment for
+    // why. This render pass just acts on whatever the most recent real
+    // width-change event last determined.
+    if (!this.chipsAllowed) {
       // Chips just got suppressed (disabled entirely, or the pane shrank
       // below threshold, or mobile) — clean up anything left over from a
       // previous render pass where they WERE showing, same teardown as
@@ -362,22 +496,42 @@ class MarginColumn {
       return;
     }
 
-    this.track.replaceChildren();
-
     // Map both marker kinds into the generic MarginItem shape the shared
     // layout pass operates over (marginLayout.ts), then merge-sort by
     // document position — layoutMarginItems() requires its input already
     // sorted by `.from` ascending, and note/link markers are each already
     // individually sorted (both scanners walk the doc left to right), so a
     // stable merge is all that's needed rather than a full re-sort.
+    // Note chips are simple/synchronous (buildChip has no async state or
+    // subscriptions — see its own comment), so they're safe to key on
+    // actual content: layoutMarginItems() will reuse the previous render's
+    // DOM node whenever both id and key match, skipping a rebuild for any
+    // note whose text/type didn't change. `key` deliberately includes
+    // marker.type and marker.content (not just `.id`, which is an ordinal
+    // position that stays the same even when a note's text is edited).
     const noteItems: MarginItem[] = markers.map((marker) => ({
       from: marker.from,
       id: `mn:${marker.id}`,
+      key: `${marker.type ?? ''}\u0000${marker.content}`,
       buildChip: () => this.buildChip(marker),
     }));
+    // Link chips are NOT given a content-based key here: buildLinkChip()
+    // registers a fresh async-preview subscription every time it's called
+    // and unsubscribes the previous one for that marker id (see its own
+    // comment) — that subscribe/unsubscribe pairing, and the render()
+    // prefetch step above that feeds it, assume buildChip runs on every
+    // pass. Reusing a link chip node without also re-running that logic
+    // risks subtly stale preview content in a case this pass didn't
+    // stress-test for. Giving it a fresh, render-unique key every time
+    // opts link items OUT of layoutMarginItems' reuse path entirely
+    // (always "different key" -> always rebuilt), preserving their exact
+    // previous behavior while note items still get the DOM-churn
+    // reduction. Revisit if link chips' subscription lifecycle is ever
+    // reworked to be reuse-safe too.
     const linkItems: MarginItem[] = linkMarkers.map((marker) => ({
       from: marker.from,
       id: marker.id,
+      key: `${myGeneration}`,
       buildChip: () => this.buildLinkChip(marker, prefetched.get(marker.id)),
     }));
     const items = mergeByFrom(noteItems, linkItems);
@@ -650,7 +804,7 @@ class MarginColumn {
     chip.style.borderLeftColor = noteTypeColor(marker.type);
     chip.dataset.noteId = String(marker.id);
 
-    chip.createEl('span', { cls: 'mn-chip-label', text: String(marker.id) });
+    chip.createEl('span', { cls: 'mn-chip-label', text: `${marker.id}. ` });
     chip.createEl('span', { cls: 'mn-chip-text', text: marker.content });
 
     // Clicking a chip (outside the delete button) just moves the caret into
@@ -709,6 +863,16 @@ class MarginColumn {
       win.cancelAnimationFrame(this.rafHandle);
       this.rafHandle = null;
     }
+    if (this.debounceHandle !== null) {
+      const win = this.view.dom.ownerDocument.defaultView ?? window;
+      win.clearTimeout(this.debounceHandle);
+      this.debounceHandle = null;
+    }
+    if (this.safetyNetHandle !== null) {
+      const win = this.view.dom.ownerDocument.defaultView ?? window;
+      win.clearInterval(this.safetyNetHandle);
+      this.safetyNetHandle = null;
+    }
     for (const unsub of this.linkPreviewUnsubs.values()) unsub();
     this.linkPreviewUnsubs.clear();
     for (const component of this.linkPreviewComponents.values()) component.unload();
@@ -725,13 +889,45 @@ export const marginPanel = ViewPlugin.fromClass(
       this.col = new MarginColumn(view);
     }
     update(update: ViewUpdate) {
-      if (
-        update.docChanged ||
-        update.viewportChanged ||
-        update.geometryChanged ||
-        update.selectionSet ||
-        update.transactions.some((tr) => tr.effects.some((e) => e.is(forceMarginRefresh)))
-      ) {
+      // docChanged fires at keystroke speed (every character typed is a
+      // doc change), but most individual keystrokes can't possibly move,
+      // add, or remove a chip — typing a letter in the middle of a
+      // sentence changes neither the line count nor any marker's
+      // brackets. isDocChangeLayoutRelevant() filters those out before a
+      // debounce timer is even armed, so ordinary typing schedules NO
+      // rebuild at all rather than one that just gets debounced away.
+      // Edits that DO look layout-relevant (a newline, or a bracket that
+      // could start/end/resize a [mn:...] or [[link]]) still go through
+      // the same debounce as before, so a burst of THOSE still collapses
+      // into one rebuild rather than one per edit.
+      if (update.docChanged && isDocChangeLayoutRelevant(update)) {
+        this.col.schedule(false);
+      }
+      // geometryChanged is CM6's OWN signal for "this editor's rendered
+      // dimensions changed in this update" — but per CM6's docs that
+      // covers BOTH a real box-size change (pane resize, sidebar toggle,
+      // split open/close) AND ordinary typing that grows/shrinks content
+      // height (e.g. a line wrapping to a new visual row). Treating it as
+      // a live-resize signal was the actual cause of chips vanishing while
+      // typing: on a geometryChanged-from-typing update, this branch called
+      // updateChipsAllowed() (a live clientWidth re-measurement) and an
+      // IMMEDIATE, non-debounced schedule() on literally the same keystroke
+      // isDocChangeLayoutRelevant() above was correctly trying to skip or
+      // debounce — a race between that immediate render() and the doc's
+      // own fast-changing state during a typing burst is what left the
+      // column empty until a full file close/reopen forced a clean re-init.
+      //
+      // The constructor's ResizeObserver on view.scrollDOM is the correct,
+      // narrower signal for this: it only fires on an actual box-size
+      // change of the pane itself, never as a side effect of content
+      // reflowing inside a pane whose own box didn't resize. That's the
+      // sole live-measurement trigger now; geometryChanged is no longer
+      // read here at all.
+      const forcedRefresh = update.transactions.some((tr) => tr.effects.some((e) => e.is(forceMarginRefresh)));
+      if (forcedRefresh) {
+        this.col.updateChipsAllowed();
+      }
+      if (update.viewportChanged || (update.selectionSet && !update.docChanged) || forcedRefresh) {
         this.col.schedule();
       }
     }

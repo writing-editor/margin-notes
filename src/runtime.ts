@@ -12,6 +12,19 @@ export const runtime: { app: App | null; settings: MarginNotesSettings } = {
   settings: DEFAULT_SETTINGS,
 };
 
+// Last-known frontmatter-mode enabled/disabled result, keyed by file path.
+// Exists specifically to survive the brief window after a doc edit where
+// app.metadataCache.getFileCache(file) returns null because Obsidian hasn't
+// finished its own debounced re-parse of the file's frontmatter yet — that
+// window is real and asynchronous, independent of anything this plugin
+// controls, and without this cache a null read during it was
+// indistinguishable from "this file genuinely has no margin-notes
+// property", causing isMarginNotesEnabled to return false and every note in
+// the file to lose its decoration simultaneously for that one call. Falling
+// back to the last DEFINITE (non-null cache) reading for this file instead
+// of collapsing to false closes that gap.
+const lastKnownFrontmatterEnabled = new Map<string, boolean>();
+
 /**
  * The single source of truth for "does this file get margin notes". Called
  * from the note-decoration StateField (every doc/selection change) and from
@@ -33,6 +46,14 @@ export function isMarginNotesEnabled(file: TFile | null): boolean {
   // frontmatter mode
   const key = settings.frontmatterKey.trim() || DEFAULT_SETTINGS.frontmatterKey;
   const cache = app.metadataCache.getFileCache(file);
-  const value: unknown = cache?.frontmatter?.[key];
-  return value === true || value === 'true';
+  if (cache === null) {
+    // No current reading available (mid-reparse) — use whatever this file's
+    // last DEFINITE reading was, defaulting to false only the very first
+    // time this file is ever seen (nothing to fall back to yet).
+    return lastKnownFrontmatterEnabled.get(file.path) ?? false;
+  }
+  const value: unknown = cache.frontmatter?.[key];
+  const enabled = value === true || value === 'true';
+  lastKnownFrontmatterEnabled.set(file.path, enabled);
+  return enabled;
 }
