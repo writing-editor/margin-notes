@@ -801,10 +801,14 @@ class MarginColumn {
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
     const chip = createEl('div', { cls: 'mn-chip' });
-    chip.setCssStyles({ borderLeftColor: noteTypeColor(marker.type) });
     chip.dataset.noteId = String(marker.id);
 
-    chip.createEl('span', { cls: 'mn-chip-label', text: `${marker.id}. ` });
+    // Plain sidenotes have no left border anymore to carry the
+    // per-note-type color, so the color now lives on the superscript
+    // label itself instead — same noteTypeColor(marker.type) value as
+    // before, just moved to where it's still visible.
+    const label = chip.createEl('span', { cls: 'mn-chip-label', text: `${marker.id}` });
+    label.setCssStyles({ color: noteTypeColor(marker.type) });
     chip.createEl('span', { cls: 'mn-chip-text', text: marker.content });
 
     // Clicking a chip (outside the delete button) just moves the caret into

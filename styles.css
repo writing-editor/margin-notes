@@ -92,11 +92,16 @@
   right: 0;
   pointer-events: auto;
   cursor: pointer;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-left: 3px solid var(--text-accent);
-  border-radius: 4px;
-  padding: 4px 8px;
+  /* Plain book-sidenote look by default: no fill, no border box at all —
+     just text sitting in the margin. The boxed/bordered "chip" treatment
+     (background, border, left accent bar, radius, padding) is reintroduced
+     below scoped to .mn-chip-link only, since link previews still need a
+     visually distinct container (they're rendering someone else's note
+     content, not a short annotation). */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   /* Falls back to a fixed 12px only if the plugin never sets the variable
      (e.g. CSS loaded before main.ts's applyMarginWidth() runs once on
      load). Normally set from settings.ts's chipFontRatio, expressed as a
@@ -107,16 +112,13 @@
   line-height: 1.4;
   color: var(--text-normal);
   /* CRITICAL: without this, max-height below only constrains the CONTENT
-     box — the 2px top+bottom border and 8px top+bottom padding then render
-     ON TOP of that, making every clamped chip ~10px taller on screen than
-     marginLayout.ts's layout math accounted for when it reserved room
-     before the next chip's anchor. That extra height eats directly into
-     CHIP_GAP, and with several clamped chips stacked tightly, compounds
-     until adjacent chips' borders touch or overlap — visually merging
-     into what looks like one continuous block with no separation between
-     them. border-box makes max-height mean "this chip's total rendered
-     height, border and padding included," matching what the layout pass
-     actually reserves space for. */
+     box — with a border/padding present that would render ON TOP of it,
+     making a clamped chip render taller than marginLayout.ts's layout math
+     accounted for. Kept even now that the plain sidenote has no border/
+     padding of its own, since .mn-chip-link below still does. border-box
+     makes max-height mean "this chip's total rendered height, border and
+     padding included," matching what the layout pass actually reserves
+     space for. */
   box-sizing: border-box;
   /* Set per-chip from marginPanel.ts to the room actually available before
      the next chip's anchor — "none" when there's no crowding, so an
@@ -133,6 +135,22 @@
   transform-origin: right center;
   transform: scale(1);
   transition: transform 120ms ease-out, box-shadow 120ms ease-out, max-height 120ms ease-out;
+}
+
+/* --- Boxed chip container, link previews only --- */
+/* Everything the plain .mn-chip used to have (fill, border, left accent
+   bar, rounded corners, padding) lives here now, scoped to .mn-chip-link
+   so plain mn: sidenotes stay borderless/backgroundless while link
+   previews keep a visually distinct container. buildLinkChip() (in
+   marginPanel.ts) always adds both classes ("mn-chip mn-chip-link"), so
+   this always layers on top of the plain base above rather than
+   replacing it. */
+.mn-chip-link {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-accent);
+  border-radius: 4px;
+  padding: 4px 8px;
 }
 
 /* Only applied (via JS adding this class) when max-height actually clamps
@@ -165,13 +183,60 @@
   overflow: visible;
   -webkit-mask-image: none;
   mask-image: none;
-  border-color: transparent;
-  box-shadow: 0 8px 24px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.3));
   z-index: 20;
+  /* Plain sidenotes have no border/background of their own at rest, so on
+     hover-zoom two vertically-close notes can end up visually overlapping
+     — one note's text rendering on top of another's with nothing behind
+     either to separate them, reading as noise where they cross. A solid
+     background (Obsidian's own primary editor background, so it matches
+     the pane behind it rather than standing out as a card) fixes that by
+     giving the zoomed note an opaque backing, without reintroducing the
+     border/shadow "boxed chip" look this note type deliberately doesn't
+     have. */
+  background: var(--background-primary);
 }
 
+/* Link chips are still a bordered/filled box even at rest (see
+   .mn-chip-link above) — on hover they additionally get the "lift off the
+   stack" shadow, which reads as an intentional depth cue against their
+   own box. Plain sidenotes have no box to lift, so that same shadow
+   reads as a stray gray smear floating behind bare text instead — hence
+   scoped to .mn-chip-link only, not the shared base .mn-chip:hover rule. */
+.mn-chip-link:hover {
+  border-color: transparent;
+  box-shadow: 0 8px 24px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.3));
+}
+
+/* Plain mn: sidenote label: a small superscript number sitting at the
+   note's own top-left "binding" corner, colored per-note-type (set inline
+   from marginPanel.ts same as before — the accent line was the only other
+   place that color showed, and that line is gone now on plain notes, so
+   the superscript is its sole remaining home). Book sidenotes number from
+   the outer margin edge inward; since this margin sits at the right, that
+   reads most naturally as a small mark preceding the note's own first
+   line rather than an inline "N." prefix mixed into the text itself. */
 .mn-chip-label {
+  display: inline-block;
+  font-weight: 700;
+  font-size: 0.75em;
+  vertical-align: text-top;
+  position: relative;
+  top: -0.35em;
+  margin-right: 2px;
+  /* color set inline per-note from marginPanel.ts, same variable the old
+     border-left used (noteTypeColor(marker.type)) */
+}
+
+/* Link-preview chips keep the old inline muted-prefix look — they're
+   still a boxed container (see .mn-chip-link above), and a floating
+   superscript numeral reads oddly sitting inside a bordered box. */
+.mn-chip-link .mn-chip-label {
+  display: inline;
   font-weight: 600;
+  font-size: inherit;
+  vertical-align: baseline;
+  position: static;
+  top: auto;
   color: var(--text-muted);
   margin-right: 4px;
 }

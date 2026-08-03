@@ -84,6 +84,26 @@ export default class MarginNotesPlugin extends Plugin {
     // frontmatter edited through the Properties UI rather than by typing.
     this.registerEvent(this.app.vault.on('rename', () => this.refreshAllEditors()));
     this.registerEvent(this.app.metadataCache.on('changed', (file) => this.refreshAllEditors(file)));
+
+    // Switching a leaf between Live Preview/Source and Reading mode does
+    // NOT tear down and recreate the CM6 EditorView (and so does NOT
+    // reconstruct marginPanel's MarginColumn either) — Obsidian just hides
+    // the editor's DOM behind the reading view's DOM and shows it again
+    // later, in the same underlying view. While hidden, the margin
+    // column's own ResizeObserver can see the pane's clientWidth collapse
+    // to 0 (or simply never fire in the first place, depending on how the
+    // hide is implemented), which updateChipsAllowed() reads as "pane too
+    // narrow" and leaves chipsAllowed false — so mn-has-margin stays on
+    // (space reserved) but render() bails out early and paints nothing
+    // into the track. Nothing then re-checks that width or reschedules a
+    // render until something else forces a fresh MarginColumn construction
+    // entirely, e.g. actually closing and reopening the file. These two
+    // workspace events are Obsidian's own signal for exactly this class of
+    // "the active view's visible mode/leaf just changed" transition, so
+    // refreshing on both re-measures width and repaints as soon as the
+    // editor becomes visible again instead of waiting on a full reopen.
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshAllEditors()));
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.refreshAllEditors()));
   }
 
   onunload() {
