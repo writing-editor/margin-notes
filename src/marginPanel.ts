@@ -6,7 +6,7 @@ import { findNoteMarkers, forceMarginRefresh, NoteMarker } from './noteMarkers';
 import { findTopLevelLinkMarkers, linkDisplayText, LinkMarker } from './linkMarkers';
 import { getLinkPreview, renderForConsumer } from './linkPreview';
 import { noteTypeColor, LINK_CHIP_COLOR } from './noteTypes';
-import { MarginItem, layoutMarginItems } from './marginLayout';
+import { MarginItem, layoutMarginItems, invalidateTrack } from './marginLayout';
 import type { Placement } from './agents';
 import { renderPlacementText } from './agents';
 
@@ -440,6 +440,19 @@ class MarginColumn {
       // itself (the pane could grow back past threshold on the very next
       // resize, at which point a normal render() call resumes as usual).
       this.track.replaceChildren();
+      // MUST accompany the direct replaceChildren() above — see
+      // invalidateTrack()'s own doc comment. Without this, layoutMarginItems()'s
+      // next call (once chips are allowed again) would see the same
+      // item ids/keys as its last successful pass, conclude every chip is
+      // still reusable, and skip its own re-attach step as a no-op — leaving
+      // correctly-positioned chips sitting detached in memory while `track`
+      // stays empty in the live DOM. This is exactly the "margin notes gone
+      // until the file is closed and reopened" bug for a note-only file:
+      // a file with at least one [[link]] doesn't show it, purely because a
+      // link chip's key changes every render (see buildLinkChip's own
+      // comment) and so its presence forces a real re-attach anyway,
+      // masking the same underlying staleness.
+      invalidateTrack(this.track);
       for (const unsub of this.linkPreviewUnsubs.values()) unsub();
       this.linkPreviewUnsubs.clear();
       for (const component of this.linkPreviewComponents.values()) component.unload();
@@ -881,6 +894,7 @@ class MarginColumn {
     this.linkPreviewUnsubs.clear();
     for (const component of this.linkPreviewComponents.values()) component.unload();
     this.linkPreviewComponents.clear();
+    invalidateTrack(this.track);
     this.track.remove();
     this.view.scrollDOM.classList.remove('mn-has-margin');
   }

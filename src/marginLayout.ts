@@ -11,6 +11,31 @@ export const CHIP_GAP = 6;
  */
 const previousRenderByTrack = new WeakMap<HTMLDivElement, Map<string, { key: string; chip: HTMLDivElement }>>();
 
+/**
+ * Invalidates a track's remembered chip set without touching the DOM
+ * itself. MUST be called by any caller that empties `track`'s children
+ * directly (e.g. `track.replaceChildren()` on a "chips suppressed" bail-out
+ * path) rather than through layoutMarginItems() — otherwise this module's
+ * own reuse cache goes stale relative to what's actually attached: the next
+ * layoutMarginItems() call would see the SAME item ids/keys as last time,
+ * conclude every chip is reusable, skip its own track.replaceChildren()
+ * call as a no-op DOM-churn optimization (see anyNewOrRemoved below), and
+ * leave the real DOM emptied while only the chips' in-memory `style.top`
+ * gets updated on now-detached nodes — visually nothing renders, and
+ * nothing about that state self-corrects on a later call, since every
+ * subsequent pass keeps seeing the same "nothing changed" reuse verdict.
+ * This was the concrete cause of margin notes vanishing until a file
+ * reload: a note-only file's chips have a content-derived, otherwise-
+ * stable `key` (see MarginItem's own doc comment) and so are exactly the
+ * shape of item that this stale-cache trap silently swallows; a file that
+ * also has at least one link marker "self-heals" only as a side effect of
+ * link chips deliberately never being reuse-eligible (their key changes
+ * every render — see marginPanel.ts's buildLinkChip comment), which forces
+ * track.replaceChildren() to run anyway and masks the same underlying bug.
+ */
+export function invalidateTrack(track: HTMLDivElement): void {
+  previousRenderByTrack.delete(track);
+}
 
 /**
  * Generic shape any margin item (note chip, link chip, or any future kind)
