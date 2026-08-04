@@ -37,6 +37,48 @@ function appendTrashIcon(button: HTMLButtonElement): void {
 }
 
 /**
+ * Content fingerprint for a link chip, used as its MarginItem.key (see
+ * marginLayout.ts's MarginItem.key doc comment for what `key` is for).
+ * Folds in everything that actually changes what the chip LOOKS like:
+ *
+ *  - marker.linkpath/heading/alias: literally what's written at [[...]] —
+ *    editing the link text itself (retargeting it, adding/removing a
+ *    heading or alias) must invalidate any previously-built chip.
+ *  - the resolved preview state: 'missing' (no such note), 'error' (read
+ *    failed), or the excerpted markdown string once 'ready'. This is what
+ *    makes the fingerprint self-correct as content loads or changes —
+ *    'pending' collapses to the SAME key every time (see below) so a
+ *    still-loading chip doesn't get needlessly rebuilt on every tick while
+ *    waiting, but the moment its fetch resolves to 'ready'/'missing'/
+ *    'error' the key changes and the real content gets picked up.
+ *
+ * getLinkPreview() is called here with a no-op onUpdate, same pattern as
+ * render()'s own prefetch step above — it's synchronous, safe to call
+ * repeatedly, and only ever kicks off a NEW fetch if the cache is cold, so
+ * calling it again just to read the current state costs nothing extra.
+ * (The chip's own live-updating subscription is still registered
+ * separately by buildLinkChip() itself, same as before this change.)
+ *
+ * Deliberately does NOT include myGeneration/render-pass-unique data —
+ * that was the bug (see the render() call site's own comment for the full
+ * story): a key that's different on every render defeats the whole point
+ * of layoutMarginItems()'s reuse check.
+ */
+function linkChipKey(marker: LinkMarker, sourcePath: string): string {
+  const app = runtime.app;
+  const identity = `${marker.linkpath}\u0000${marker.heading ?? ''}\u0000${marker.alias ?? ''}`;
+  if (!app) return `${identity}\u0000no-app`;
+  const { state } = getLinkPreview(app, marker, sourcePath, () => {});
+  const previewFingerprint =
+    state.status === 'ready'
+      ? `ready\u0000${state.markdown}`
+      : state.status === 'missing'
+        ? `missing\u0000${state.linkpath}`
+        : state.status; // 'pending' | 'error' — both stable, content-free labels
+  return `${identity}\u0000${previewFingerprint}`;
+}
+
+/**
  * One shared builder for both chip kinds' delete buttons, so the pinned-
  * badge positioning/hover-reveal behaviour (all in styles.css's
  * .mn-chip-delete rules) and the "don't let this click fall through to the
@@ -528,23 +570,35 @@ class MarginColumn {
       key: `${marker.type ?? ''}\u0000${marker.content}`,
       buildChip: () => this.buildChip(marker),
     }));
-    // Link chips are NOT given a content-based key here: buildLinkChip()
-    // registers a fresh async-preview subscription every time it's called
-    // and unsubscribes the previous one for that marker id (see its own
-    // comment) — that subscribe/unsubscribe pairing, and the render()
-    // prefetch step above that feeds it, assume buildChip runs on every
-    // pass. Reusing a link chip node without also re-running that logic
-    // risks subtly stale preview content in a case this pass didn't
-    // stress-test for. Giving it a fresh, render-unique key every time
-    // opts link items OUT of layoutMarginItems' reuse path entirely
-    // (always "different key" -> always rebuilt), preserving their exact
-    // previous behavior while note items still get the DOM-churn
-    // reduction. Revisit if link chips' subscription lifecycle is ever
-    // reworked to be reuse-safe too.
+    // Link chips DO get a content-based key here, same idea as note items
+    // above — see linkChipKey()'s own comment for what goes into it and
+    // why. This used to be `${myGeneration}` (a counter bumped on every
+    // render() call), which made every link chip's key different on every
+    // single pass — including the SAFETY_NET_INTERVAL_MS background tick
+    // that fires every few seconds even when nothing changed. That forced
+    // layoutMarginItems() to rebuild every link chip's DOM node from
+    // scratch on every tick (new element -> anyNewOrRemoved -> a real
+    // track.replaceChildren()), which is what caused the hover-zoom bug:
+    // a genuinely new DOM node has no :hover state, so mid-hover the chip
+    // under the cursor would silently snap out of its `:hover` scale
+    // transform, and if the rebuild shifted anything by even a pixel the
+    // browser could resolve the still-active mouse position onto a
+    // different (neighboring) chip's new node instead, "handing off" the
+    // hover to the note above/below. Same replaceChildren() call is also
+    // what the width "blink" comment in marginLayout.ts is about.
+    //
+    // A real content fingerprint fixes this the same way it already works
+    // for note items: an unchanged link now reuses its previous DOM node
+    // (subscription and all — see buildLinkChip(), which still
+    // unsubscribes+resubscribes whenever it IS actually called) and the
+    // safety-net tick becomes a cheap no-op for it, exactly like it already
+    // is for notes. A link chip is only rebuilt when something about it
+    // that's actually visible would change: its target/heading/alias, or
+    // its resolved preview content.
     const linkItems: MarginItem[] = linkMarkers.map((marker) => ({
       from: marker.from,
       id: marker.id,
-      key: `${myGeneration}`,
+      key: linkChipKey(marker, file?.path ?? ''),
       buildChip: () => this.buildLinkChip(marker, prefetched.get(marker.id)),
     }));
     const items = mergeByFrom(noteItems, linkItems);
