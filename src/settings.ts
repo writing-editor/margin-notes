@@ -335,7 +335,9 @@ export class MarginNotesSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Provider')
       .addDropdown((dd) => {
-        AGENT_PROVIDERS.forEach((p) => dd.addOption(p.id, p.label));
+        AGENT_PROVIDERS.forEach((p) => {
+          dd.addOption(p.id, p.label);
+        });
         dd.setValue(s.agent.provider).onChange((value) => {
           s.agent.provider = value as AgentProvider;
           void this.save().then(() => this.render());
@@ -437,7 +439,9 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setDesc(`Each markdown file in "${s.agent.agentsFolder}/" is a profile \u2014 pick which one runs.`)
       .addDropdown((dd) => {
         const names = listAgentNames(this.app, s.agent.agentsFolder);
-        names.forEach((name) => dd.addOption(name, name));
+        names.forEach((name) => {
+          dd.addOption(name, name);
+        });
         if (!names.includes(s.agent.selectedAgent) && names.length) s.agent.selectedAgent = names[0];
         dd.setValue(s.agent.selectedAgent).onChange((value) => {
           s.agent.selectedAgent = value;

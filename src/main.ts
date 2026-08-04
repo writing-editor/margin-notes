@@ -114,7 +114,10 @@ export default class MarginNotesPlugin extends Plugin {
     // registerEditorExtension/registerEvent handle their own teardown.
     this.linkPreviewInvalidation?.unregister();
     disposeAllLinkPreviews();
-    if (this.refreshRaf !== null) cancelAnimationFrame(this.refreshRaf);
+    // activeWindow, not bare cancelAnimationFrame — must match whichever
+    // window's timer runRefreshRetry's requestAnimationFrame call above was
+    // actually scheduled against (see that call's own comment).
+    if (this.refreshRaf !== null) activeWindow.cancelAnimationFrame(this.refreshRaf);
   }
 
   async runAgentCommand(): Promise<void> {
@@ -159,7 +162,12 @@ export default class MarginNotesPlugin extends Plugin {
     this.refreshAllEditors();
     this.refreshRetriesLeft -= 1;
     if (this.refreshRetriesLeft > 0) {
-      this.refreshRaf = requestAnimationFrame(this.runRefreshRetry);
+      // activeWindow (Obsidian's own popout-aware global, not the bare
+      // `window`/`requestAnimationFrame` identifier) resolves to whichever
+      // window the currently-focused leaf actually lives in — a popout is a
+      // separate browser window with its own animation-frame timer, and the
+      // bare identifier can silently schedule against the wrong one there.
+      this.refreshRaf = activeWindow.requestAnimationFrame(this.runRefreshRetry);
     } else {
       this.refreshRaf = null;
     }

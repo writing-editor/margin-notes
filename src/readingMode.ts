@@ -192,11 +192,21 @@ function replaceRawTextWithSup(el: HTMLElement, raw: string, label: string, colo
     const after = textNode.splitText(idx);
     after.splitText(raw.length); // leaves `after` holding exactly `raw`
 
-    const sup = el.ownerDocument.createElement('sup');
-    sup.className = 'mn-marker mn-marker-reading';
-    sup.textContent = label;
-    sup.style.color = color;
-    sup.style.cursor = 'pointer';
+    // el.createEl (not raw ownerDocument.createElement — obsidianmd/prefer-create-el)
+    // is document-scoped to `el` the same way the raw ownerDocument call
+    // was, so this still creates the node in the correct window for a
+    // popped-out pane. createEl always appends its new node to the node
+    // it's called on (per Obsidian's own Node.createEl contract) — that's
+    // a harmless, temporary parenting here since `after.replaceWith(sup)`
+    // immediately below moves `sup` to its real position regardless of
+    // where it started, so the intermediate append/remove has no visible
+    // effect.
+    const sup = el.createEl('sup', { cls: 'mn-marker mn-marker-reading', text: label });
+    sup.remove();
+    // setCssStyles (not direct .style.x assignment) per Obsidian's plugin
+    // guidelines — obsidianmd/no-static-styles-assignment. Same pattern as
+    // noteMarkers.ts's NoteAnchorWidget.
+    sup.setCssStyles({ color, cursor: 'pointer' });
 
     after.replaceWith(sup);
     return sup;
@@ -220,7 +230,9 @@ function replaceRawTextWithSup(el: HTMLElement, raw: string, label: string, colo
  */
 function markLinkAnchor(anchor: HTMLAnchorElement, color: string): void {
   anchor.classList.add('mn-marker-reading', 'mn-linktext');
-  anchor.style.color = color;
+  // setCssStyles, not direct .style.x assignment — see replaceRawTextWithSup's
+  // comment above for why.
+  anchor.setCssStyles({ color });
 }
 
 async function jumpToSource(sourcePath: string, charOffset: number): Promise<void> {

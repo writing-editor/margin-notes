@@ -183,7 +183,16 @@ export function layoutMarginItems(
   );
   const naturalHeightsByChip = new Map<HTMLDivElement, number>();
   if (isNewChip.size > 0) {
-    const measureHost = track.ownerDocument.createElement('div');
+    // track.ownerDocument.body.createDiv(...) (an Obsidian create*-family
+    // helper, not raw document.createElement — obsidianmd/prefer-create-el)
+    // creates AND appends in one call, scoped to the SAME document `track`
+    // itself lives in — this still matters for popout-window correctness
+    // even though it's `body.createDiv` rather than the bare global
+    // `createDiv`: a popout is a separate browser window with its own
+    // `document`, and appending a node created against the wrong one here
+    // would measure it in a detached/invisible document instead of the
+    // popout's own visible one.
+    const measureHost = track.ownerDocument.body.createDiv();
     // setCssStyles (not direct .style.x assignment) per Obsidian's plugin
     // guidelines — obsidianmd/no-static-styles-assignment.
     measureHost.setCssStyles({
@@ -195,7 +204,6 @@ export function layoutMarginItems(
       // different width would give the wrong natural height.
       width: `${track.clientWidth}px`,
     });
-    track.ownerDocument.body.appendChild(measureHost);
     for (const chip of isNewChip) measureHost.appendChild(chip);
     for (const chip of isNewChip) naturalHeightsByChip.set(chip, chip.offsetHeight);
     measureHost.remove();
