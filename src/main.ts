@@ -10,6 +10,7 @@ import { registerLinkPreviewInvalidation, disposeAllLinkPreviews } from './linkP
 import { marginPanel, insertNoteAt } from './marginPanel';
 import { mnTypeAutocomplete } from './typeAutocomplete';
 import { runAgent } from './agentRunner';
+import { readingModePostProcessor } from './readingMode';
 
 // Obsidian's public Editor type doesn't expose the underlying CM6 EditorView,
 // but every source/live-preview editor has one at editor.cm — the same
@@ -45,6 +46,15 @@ export default class MarginNotesPlugin extends Plugin {
     // per-editor — parallel to the rename/metadataCache listeners below,
     // which are also plugin-lifetime, not per-view.
     this.linkPreviewInvalidation = registerLinkPreviewInvalidation(this.app);
+
+    // Reading-mode support: decoration only (no margin column — see
+    // readingMode.ts's own top comment for the full history of why that
+    // was cut). registerMarkdownPostProcessor itself has no per-leaf cost
+    // while every open leaf is in Source/Live Preview — Obsidian only
+    // invokes it when its OWN unrelated rendering pipeline decides to
+    // render a Reading-mode block, which structurally cannot happen while
+    // nothing is in Reading view.
+    this.registerMarkdownPostProcessor(readingModePostProcessor);
 
     this.addCommand({
       id: 'insert-margin-note',
@@ -86,36 +96,74 @@ export default class MarginNotesPlugin extends Plugin {
     this.registerEvent(this.app.metadataCache.on('changed', (file) => this.refreshAllEditors(file)));
 
     // Switching a leaf between Live Preview/Source and Reading mode does
-    // NOT tear down and recreate the CM6 EditorView (and so does NOT
-    // reconstruct marginPanel's MarginColumn either) — Obsidian just hides
-    // the editor's DOM behind the reading view's DOM and shows it again
-    // later, in the same underlying view. While hidden, the margin
-    // column's own ResizeObserver can see the pane's clientWidth collapse
-    // to 0 (or simply never fire in the first place, depending on how the
-    // hide is implemented), which updateChipsAllowed() reads as "pane too
-    // narrow" and leaves chipsAllowed false — so mn-has-margin stays on
-    // (space reserved) but render() bails out early and paints nothing
-    // into the track. Nothing then re-checks that width or reschedules a
-    // render until something else forces a fresh MarginColumn construction
-    // entirely, e.g. actually closing and reopening the file. These two
-    // workspace events are Obsidian's own signal for exactly this class of
-    // "the active view's visible mode/leaf just changed" transition, so
-    // refreshing on both re-measures width and repaints as soon as the
-    // editor becomes visible again instead of waiting on a full reopen.
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshAllEditors()));
-    this.registerEvent(this.app.workspace.on('layout-change', () => this.refreshAllEditors()));
+    // NOT tear down and recreate the CM6 EditorView — MarkdownView.editor
+    // is a required, always-present field regardless of which mode is
+    // currently visible, so the CM6 instance itself is never the thing
+    // that goes away. What DOES change on a mode switch is which mode's
+    // DOM is currently visible, which can leave the editor's margin
+    // column's own width/enablement check stale until something forces a
+    // fresh check. scheduleRefresh() below (deferred by one frame, so
+    // this doesn't act mid-transition before Obsidian has actually
+    // finished swapping which mode's DOM is visible) re-checks and
+    // repaints it on every such transition.
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.scheduleRefresh()));
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.scheduleRefresh()));
   }
 
   onunload() {
     // registerEditorExtension/registerEvent handle their own teardown.
     this.linkPreviewInvalidation?.unregister();
     disposeAllLinkPreviews();
+    if (this.refreshRaf !== null) cancelAnimationFrame(this.refreshRaf);
   }
 
   async runAgentCommand(): Promise<void> {
     const activeFile = this.app.workspace.getActiveFile();
     await runAgent(this.app, this.settings, activeFile);
   }
+
+  private refreshRaf: number | null = null;
+  private refreshRetriesLeft = 0;
+
+  /**
+   * Coalesces active-leaf-change/layout-change into a short retry loop
+   * instead of a single deferred attempt. A single requestAnimationFrame
+   * deferral assumes Obsidian finishes remounting/attaching the CM6 view
+   * for the leaf that just changed mode within exactly one frame — that
+   * assumption was never actually confirmed (this plugin has no live
+   * Obsidian instance available to verify it against), and if it's wrong
+   * even occasionally, getCM6View(view.editor) in refreshAllEditors()
+   * returns undefined for that leaf on the one attempt made, the dispatch
+   * silently no-ops via optional chaining, and — critically — nothing
+   * tries again afterward. That reproduces the exact "margin column stuck
+   * empty until the file is closed and reopened" symptom this whole event
+   * wiring exists to prevent, just with the failure moved one layer
+   * deeper (from "no refresh attempt at all" to "one refresh attempt that
+   * silently missed").
+   *
+   * Retrying across several frames removes the single-frame timing
+   * assumption entirely: RETRY_FRAMES is a small, cheap upper bound (each
+   * attempt is just a dispatch onto whichever CM6 views ARE currently
+   * reachable — trivial cost even when most attempts are redundant), not
+   * a guess at exactly which frame the remount finishes on.
+   */
+  private static readonly REFRESH_RETRY_FRAMES = 6;
+
+  private scheduleRefresh() {
+    this.refreshRetriesLeft = MarginNotesPlugin.REFRESH_RETRY_FRAMES;
+    if (this.refreshRaf !== null) return; // a retry loop is already running — it'll pick up this reset count
+    this.runRefreshRetry();
+  }
+
+  private runRefreshRetry = () => {
+    this.refreshAllEditors();
+    this.refreshRetriesLeft -= 1;
+    if (this.refreshRetriesLeft > 0) {
+      this.refreshRaf = requestAnimationFrame(this.runRefreshRetry);
+    } else {
+      this.refreshRaf = null;
+    }
+  };
 
   refreshAllEditors(onlyFile?: TFile) {
     this.app.workspace.getLeavesOfType('markdown').forEach((leaf) => {

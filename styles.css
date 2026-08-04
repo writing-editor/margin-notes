@@ -134,7 +134,7 @@
      the chip leftward/vertically only — never toward .cm-content. */
   transform-origin: right center;
   transform: scale(1);
-  transition: transform 120ms ease-out, box-shadow 120ms ease-out, max-height 120ms ease-out;
+  transition: transform 60ms ease-out, box-shadow 60ms ease-out, max-height 60ms ease-out, padding 60ms ease-out, background 60ms ease-out, border-color 60ms ease-out;
 }
 
 /* --- Boxed chip container, link previews only --- */
@@ -167,18 +167,25 @@
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent 100%);
 }
 
-/* Unified hover-zoom — applies to EVERY chip, clamped or not. This
-   supersedes and REPLACES the old .mn-chip.mn-chip-clamped:hover rule
-   (Gotcha #4): that rule only fired for clamped chips and left unclamped
-   chips with no hover treatment at all. Now every chip gets the same
-   "lift off the stack" motion, whether or not it had anything clamped to
-   reveal.
-   Pure CSS :hover + transform — no JS mouseenter/mouseleave listeners are
-   needed for this visual, and it has zero effect on the editor's own
-   cursor/selection/focus (marginPanel.ts's mousedown handler is separate
-   and only fires on an actual click). */
-.mn-chip:hover {
-  transform: scale(1.12);
+/* Hover-zoom only fires for chips that actually collide with a neighbor
+   (.mn-chip-clamped — see marginLayout.ts: that class is set precisely
+   when the NEXT chip's anchor leaves too little room before it, the exact
+   "has a colliding neighbor" signal). An uncontested chip has nothing to
+   reveal by zooming — its full content already renders at rest — so it
+   gets no transform at all on hover, just the delete button below. This
+   matters concretely for the delete button's positioning: it's pinned at
+   top:-6px/right:-6px relative to the chip's OWN box (see .mn-chip-delete
+   below), which is a fixed offset computed against the chip's un-scaled
+   size. Applying transform:scale() moves that -6px anchor along with the
+   scaled box, so on an uncontested chip (where zoom would add nothing
+   anyway) skipping the transform is what lets the button land at its
+   true, intended position instead of drifting with a scale it doesn't
+   need.
+   Scale kept modest (1.05, not the old 1.12) — this is revealing clamped
+   content, not drawing attention to the chip as a UI element, and the
+   old scale read as more of a jump than a reveal. */
+.mn-chip.mn-chip-clamped:hover {
+  transform: scale(1.05);
   max-height: none;
   overflow: visible;
   -webkit-mask-image: none;
@@ -187,13 +194,46 @@
   /* Plain sidenotes have no border/background of their own at rest, so on
      hover-zoom two vertically-close notes can end up visually overlapping
      — one note's text rendering on top of another's with nothing behind
-     either to separate them, reading as noise where they cross. A solid
-     background (Obsidian's own primary editor background, so it matches
-     the pane behind it rather than standing out as a card) fixes that by
-     giving the zoomed note an opaque backing, without reintroducing the
-     border/shadow "boxed chip" look this note type deliberately doesn't
-     have. */
-  background: var(--background-primary);
+     either to separate them, reading as noise where they cross. A
+     secondary background (Obsidian's own card/panel background, one step
+     off the pane's own primary background) gives the zoomed note an
+     opaque backing and reads as "this note just lifted off the page,"
+     paired with the 4px border + 4px padding below for the same reason.
+     border-box is already set on the base .mn-chip rule, so adding a
+     border/padding here doesn't change this chip's own top-left anchor
+     position — it grows outward from the existing box, not inward into
+     the text. */
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 4px;
+  /* Handles the "which neighbor is this actually colliding with" problem
+     by not needing to answer it. An earlier version tried to fade the
+     specific chip this one collides with via a sibling selector
+     (.mn-chip-clamped:hover ~ .mn-chip) — but `~` matches EVERY later
+     sibling, not just the immediate next one, so hovering chip N faded
+     ALL of N+1, N+2, N+3..., not just its actual crowding neighbor.
+     Getting the correct single neighbor would need JS to pair clamped
+     chips with the specific one that clamped them (that pairing isn't
+     preserved anywhere post-layout — marginLayout.ts's loop knows it
+     transiently while computing availableHeight, then moves on).
+     A shadow on the zoomed chip itself sidesteps this: it lifts THIS
+     chip visually off whatever is behind it, whichever chip that turns
+     out to be, without needing to identify it. Self-contained, same
+     "lift off the stack" depth cue link chips already get on hover. */
+  box-shadow: 0 6px 16px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.35));
+}
+
+/* Delete-button reveal needs overflow: visible on EVERY hovered chip, not
+   just clamped/zoomed ones — .mn-chip's resting overflow: hidden (needed
+   so the clamp fade mask above has an edge to fade against) also clips
+   the delete button's own -6px top/right overhang, since the button is a
+   child of the chip and only escapes the box visually, not in the DOM.
+   Split out from the clamped-only rule above so an uncontested chip
+   (no zoom, no scale, per the earlier fix) still reveals its delete
+   button uncropped. */
+.mn-chip:hover {
+  overflow: visible;
 }
 
 /* Link chips are still a bordered/filled box even at rest (see
@@ -270,7 +310,7 @@
   transform: scale(0.4);
   transform-origin: center;
   pointer-events: none;
-  transition: transform 120ms ease-out, opacity 120ms ease-out, background 120ms ease-out, color 120ms ease-out;
+  transition: transform 60ms ease-out, opacity 60ms ease-out, background 60ms ease-out, color 60ms ease-out;
   z-index: 21; /* above the chip's own hover z-index of 20 */
 }
 

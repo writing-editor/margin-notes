@@ -130,13 +130,50 @@ async function fetchInto(app: App, dest: TFile, entry: CacheEntry): Promise<void
     // cachedRead, not read: this is a read-only preview, so serving from
     // Obsidian's own cache (when available) avoids hitting disk on every
     // margin render.
-    const markdown = await app.vault.cachedRead(dest);
-    entry.state = { status: 'ready', markdown, renderSourcePath: dest.path };
+    const fullMarkdown = await app.vault.cachedRead(dest);
+    entry.state = { status: 'ready', markdown: excerptFor(fullMarkdown), renderSourcePath: dest.path };
   } catch (err) {
     console.error('Margin Notes: failed to read link preview target', dest.path, err);
     entry.state = { status: 'error' };
   }
   for (const listener of entry.listeners) listener();
+}
+
+// How much of a target note's content a link chip actually needs to show,
+// before this got fixed: NONE of it was limited — the cache stored, and
+// renderForConsumer() rendered, the ENTIRE target file's markdown on
+// every chip, every render. mn: notes never had this problem (they're
+// short by construction — a person types them by hand directly into the
+// margin) so it went unnoticed until a document linked to a genuinely
+// long note, or linked to the same note several times: each chip ran a
+// full MarkdownRenderer.render() pass over the whole file, repeatedly,
+// which is real, measurable lag on a large vault, not a display nicety.
+//
+// Truncating the SOURCE markdown here (before it ever reaches
+// MarkdownRenderer.render() in renderForConsumer) fixes the actual cost —
+// CSS max-height/overflow alone would still pay for rendering the entire
+// document, just hide most of it visually afterward, which does nothing
+// for the lag this was actually about.
+const EXCERPT_MAX_LINES = 6;
+const EXCERPT_MAX_CHARS = 400;
+
+function excerptFor(fullMarkdown: string): string {
+  const lines = fullMarkdown.split('\n');
+  // Skip a leading frontmatter block entirely — showing "---\ntags: ..."
+  // as a linked note's "preview" is never useful, and it would otherwise
+  // eat most or all of a short excerpt budget on metadata instead of
+  // actual content.
+  let start = 0;
+  if (lines[0]?.trim() === '---') {
+    const closing = lines.indexOf('---', 1);
+    if (closing !== -1) start = closing + 1;
+  }
+  const body = lines.slice(start).join('\n').trimStart();
+  const lineLimited = body.split('\n').slice(0, EXCERPT_MAX_LINES).join('\n');
+  const excerpt =
+    lineLimited.length > EXCERPT_MAX_CHARS ? lineLimited.slice(0, EXCERPT_MAX_CHARS) : lineLimited;
+  const wasTruncated = excerpt.length < body.length;
+  return wasTruncated ? `${excerpt.trimEnd()}…` : excerpt;
 }
 
 /**

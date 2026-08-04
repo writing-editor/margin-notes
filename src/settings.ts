@@ -229,7 +229,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
       .setDesc('Space (in pixels) reserved on the right for note chips.')
       .addSlider((slider) =>
         slider
-          .setLimits(100, 600, 10)
+          .setLimits(300, 600, 10)
           .setValue(s.marginWidth)
           .onChange(async (value) => {
             s.marginWidth = value;
