@@ -111,7 +111,7 @@ class NoteAnchorWidget extends WidgetType {
     return other.id === this.id && other.type === this.type && other.content === this.content;
   }
   toDOM() {
-    const span = createEl('span', { cls: 'mn-anchor' });
+    const span = createSpan({ cls: 'mn-anchor' });
     span.dataset.noteId = String(this.id);
     const sup = span.createEl('sup', { cls: 'mn-marker', text: String(this.id) });
     sup.setCssStyles({ color: noteTypeColor(this.type) });

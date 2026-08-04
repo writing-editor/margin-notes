@@ -114,10 +114,11 @@ export default class MarginNotesPlugin extends Plugin {
     // registerEditorExtension/registerEvent handle their own teardown.
     this.linkPreviewInvalidation?.unregister();
     disposeAllLinkPreviews();
-    // activeWindow, not bare cancelAnimationFrame — must match whichever
-    // window's timer runRefreshRetry's requestAnimationFrame call above was
-    // actually scheduled against (see that call's own comment).
-    if (this.refreshRaf !== null) activeWindow.cancelAnimationFrame(this.refreshRaf);
+    // activeWindow.cancelAnimationFrame(this.refreshRaf) → window.cancelAnimationFrame:
+    // must match runRefreshRetry's own requestAnimationFrame call above
+    // (obsidianmd/prefer-window-timers wants plain `window` for timer
+    // functions specifically, not activeWindow — see that call's comment).
+    if (this.refreshRaf !== null) window.cancelAnimationFrame(this.refreshRaf);
   }
 
   async runAgentCommand(): Promise<void> {
@@ -162,12 +163,12 @@ export default class MarginNotesPlugin extends Plugin {
     this.refreshAllEditors();
     this.refreshRetriesLeft -= 1;
     if (this.refreshRetriesLeft > 0) {
-      // activeWindow (Obsidian's own popout-aware global, not the bare
-      // `window`/`requestAnimationFrame` identifier) resolves to whichever
-      // window the currently-focused leaf actually lives in — a popout is a
-      // separate browser window with its own animation-frame timer, and the
-      // bare identifier can silently schedule against the wrong one there.
-      this.refreshRaf = activeWindow.requestAnimationFrame(this.runRefreshRetry);
+      // window (Obsidian patches the global window object itself to stay
+      // popout-correct for timer functions specifically), NOT activeWindow —
+      // activeWindow is the right choice for DOM creation/measurement (see
+      // marginPanel.ts's own comments), but Obsidian's own house style
+      // (obsidianmd/prefer-window-timers) wants plain `window` here.
+      this.refreshRaf = window.requestAnimationFrame(this.runRefreshRetry);
     } else {
       this.refreshRaf = null;
     }

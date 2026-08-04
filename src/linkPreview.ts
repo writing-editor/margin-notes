@@ -189,7 +189,7 @@ export async function renderForConsumer(
   app: App,
   state: Extract<PreviewState, { status: 'ready' }>
 ): Promise<{ el: HTMLElement; component: Component }> {
-  const el = createEl('div', { cls: 'mn-link-preview-content' });
+  const el = createDiv({ cls: 'mn-link-preview-content' });
   const component = new Component();
   component.load();
   await MarkdownRenderer.render(app, state.markdown, el, state.renderSourcePath, component);

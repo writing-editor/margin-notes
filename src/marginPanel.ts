@@ -284,7 +284,7 @@ class MarginColumn {
     // needed, because both are laid out in the same scrolling coordinate
     // space. This is the trick that made the original app's manual
     // scroll-driven positionChips() unnecessary here.
-    this.track = view.scrollDOM.createEl('div', { cls: 'mn-margin-track' });
+    this.track = view.scrollDOM.createDiv({ cls: 'mn-margin-track' });
     // ResizeObserver on scrollDOM is the ONLY place chipsAllowed gets
     // recomputed from a live width measurement (see updateChipsAllowed()) —
     // it fires precisely on a real box-size change of the pane itself
@@ -553,11 +553,11 @@ class MarginColumn {
   }
 
   private buildLinkChip(marker: LinkMarker, prefetched?: { el: HTMLElement; component: Component }): HTMLDivElement {
-    const chip = createEl('div', { cls: 'mn-chip mn-chip-link' });
+    const chip = createDiv({ cls: 'mn-chip mn-chip-link' });
     chip.setCssStyles({ borderLeftColor: LINK_CHIP_COLOR });
     chip.dataset.linkId = marker.id;
 
-    chip.createEl('span', { cls: 'mn-chip-label', text: 'link' });
+    chip.createSpan({ cls: 'mn-chip-label', text: 'link' });
 
     // Placeholder content shown synchronously while the async preview
     // fetch (linkPreview.ts) is in flight — just the bare title. Kept in
@@ -565,7 +565,7 @@ class MarginColumn {
     // chips use) so the preview-swap logic below has one clearly-scoped
     // element to replace the *contents* of, without touching the label
     // span next to it.
-    const body = chip.createEl('span', { cls: 'mn-chip-link-body', text: linkDisplayText(marker) });
+    const body = chip.createSpan({ cls: 'mn-chip-link-body', text: linkDisplayText(marker) });
 
     const info = this.view.state.field(editorInfoField, false);
     const sourcePath = info?.file?.path ?? '';
@@ -813,16 +813,16 @@ class MarginColumn {
   }
 
   private buildChip(marker: NoteMarker): HTMLDivElement {
-    const chip = createEl('div', { cls: 'mn-chip' });
+    const chip = createDiv({ cls: 'mn-chip' });
     chip.dataset.noteId = String(marker.id);
 
     // Plain sidenotes have no left border anymore to carry the
     // per-note-type color, so the color now lives on the superscript
     // label itself instead — same noteTypeColor(marker.type) value as
     // before, just moved to where it's still visible.
-    const label = chip.createEl('span', { cls: 'mn-chip-label', text: `${marker.id}` });
+    const label = chip.createSpan({ cls: 'mn-chip-label', text: `${marker.id}` });
     label.setCssStyles({ color: noteTypeColor(marker.type) });
-    chip.createEl('span', { cls: 'mn-chip-text', text: marker.content });
+    chip.createSpan({ cls: 'mn-chip-text', text: marker.content });
 
     // Clicking a chip (outside the delete button) just moves the caret into
     // the note's own text in the document (the raw `[mn.type: content]`

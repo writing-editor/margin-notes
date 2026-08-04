@@ -26,7 +26,7 @@ function mnTypeCompletions(context: CompletionContext): CompletionResult | null 
     detail: t.label,
     apply: `[mn.${t.id}: `,
     render: (el: HTMLElement) => {
-      const swatch = el.createEl('span');
+      const swatch = el.createSpan();
       Object.assign(swatch.style, {
         display: 'inline-block',
         width: '8px',

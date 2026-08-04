@@ -1,6 +1,6 @@
 {
   "name": "margin-notes",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Add margin notes and sidenotes to any file, with per-file selective activation and an optional AI agent that suggests and places annotations for you.",
   "main": "main.js",
   "scripts": {

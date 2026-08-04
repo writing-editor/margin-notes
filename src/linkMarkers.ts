@@ -153,7 +153,7 @@ class LinkInlineWidget extends WidgetType {
     );
   }
   toDOM() {
-    const span = createEl('span', { cls: 'mn-linktext', text: this.displayText });
+    const span = createSpan({ cls: 'mn-linktext', text: this.displayText });
     span.addEventListener('mousedown', (evt) => {
       // Prevent the editor from placing the caret here on click — this is a
       // navigation action, not a text-editing one, same intent as
