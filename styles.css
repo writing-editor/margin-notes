@@ -12,7 +12,20 @@
    silently breaks margin reservation entirely for whichever theme it
    fails against. Kept as the one exception, with this comment explaining
    why, rather than guessing at a specificity fix that can't be verified
-   from this environment. */
+   from this environment.
+
+   (This margin-right override and the readable-line-width max-width
+   override just below it look like the same problem, but they aren't:
+   Obsidian's core rule for readable-line-width's max-width reads from a
+   documented, stable CSS variable — --file-line-width, confirmed straight
+   from Obsidian's own shipped core CSS, e.g.
+   `.markdown-source-view.mod-cm6.readable-line-width .cm-content { max-width: var(--file-line-width); }`
+   — so that one can be solved for real, by overriding the variable
+   instead of fighting the rule (see that rule's own comment below). There
+   is no equivalent published variable for .cm-content's *margin* — margin
+   reservation for third-party sidebar content isn't a case core Obsidian
+   itself has, so there's nothing for core to expose a variable for — which
+   is exactly why only THIS declaration keeps !important rather than both.) */
 
 .cm-scroller.mn-has-margin .cm-content {
   margin-right: var(--mn-margin-width, 220px) !important;
@@ -20,10 +33,24 @@
 
 /* Obsidian's "readable line length" centers .cm-content with a max-width;
    without this override the margin column would overlap the centered text
-   instead of sitting in genuinely empty space. Same !important reasoning
-   as above. */
-.is-readable-line-width .cm-scroller.mn-has-margin .cm-content {
-  max-width: none !important;
+   instead of sitting in genuinely empty space.
+
+   Unlike the margin-right override above, this one doesn't need
+   !important: Obsidian's own core rule for this (confirmed against
+   Obsidian's shipped core CSS) is
+   `.markdown-source-view.mod-cm6.readable-line-width .cm-content { max-width: var(--file-line-width); }`
+   — it reads the value from the --file-line-width custom property rather
+   than hardcoding it, so this only needs to set THAT property in scope
+   for these editors, not out-specificity the core rule's own selector at
+   all: a custom property is resolved by normal inheritance/cascade, and
+   the closest declaration wins regardless of the selector it came from.
+   Scoped to .mn-has-margin.is-readable-line-width so only editors this
+   plugin actually reserves margin space in are affected, and only while
+   readable-line-width is actually the active mode — everywhere else
+   --file-line-width is left completely alone, falling through to
+   whatever the user's own setting/theme/snippet has it set to. */
+.is-readable-line-width .cm-scroller.mn-has-margin {
+  --file-line-width: none;
 }
 
 .mn-margin-track {
@@ -69,11 +96,30 @@
    supported properties: the underline is dropped to a lighter weight
    instead of a dimmer color to read as "present but secondary," and both
    text and underline brighten together via `opacity` on hover — same
-   "muted at rest, clearer on hover" intent, different mechanism. */
+   "muted at rest, clearer on hover" intent, different mechanism.
+
+   That "lighter weight" originally meant text-decoration-thickness: 1px —
+   also flagged, under the same "text-decoration" partial-support entry as
+   text-decoration-color above (it's one of the four longhands the
+   text-decoration shorthand expands to; the lint reports under the
+   shorthand's feature name regardless of which longhand actually
+   triggered it, confirmed against a prior, unrelated plugin hitting this
+   same warning for the same reason). border-bottom was considered as a
+   substitute and deliberately rejected: border-bottom on an inline span
+   only draws under the LAST wrapped line of a multi-word link, not every
+   line (CSS1 spec explicitly: "vertical lines should appear only at the
+   beginning and the end of the whole span, not on each line" — same
+   box-decoration-break default that makes padding/background do the same
+   thing), so it would silently misrender any link text long enough to
+   wrap. text-decoration: underline itself is unaffected by this warning
+   (it's the well-supported shorthand baseline, not a longhand) and is
+   guaranteed to draw a continuous underline across every wrapped line by
+   spec — kept as-is; only its non-default thickness is dropped, falling
+   back to the browser's own default underline weight rather than the
+   flagged 1px override. */
 .mn-linktext {
   color: var(--text-accent);
   text-decoration: underline;
-  text-decoration-thickness: 1px;
   text-underline-offset: 2px;
   cursor: pointer;
   opacity: 0.75;
