@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting, SettingDefinitionItem } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting, SettingDefinitionItem, requireApiVersion } from 'obsidian';
 import type MarginNotesPlugin from './main';
 import { decryptSecret, encryptSecret, encryptionAvailable, secretStorageDescription } from './secureStorage';
 import { AGENT_PROVIDERS, AgentProvider, DensityPosture, SpellingConvention, listAgentNames } from './agents';
@@ -158,6 +158,18 @@ export class MarginNotesSettingTab extends PluginSettingTab {
 
   private async save() {
     await this.plugin.saveSettings();
+  }
+
+  /**
+   * `update()` is a 1.13.0+ API (see class doc comment — this plugin's
+   * minAppVersion is 1.7.2). It's only ever meaningful when the declarative
+   * path is actually in effect, which itself only happens on 1.13.0+, so
+   * this guard is never a behavior change — just what satisfies
+   * obsidianmd/no-unsupported-api's static check, which can't see that
+   * implication on its own.
+   */
+  private safeUpdate() {
+    if (requireApiVersion('1.13.0')) this.update();
   }
 
   render(): void {
@@ -653,7 +665,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         // desc has no function form in the installed .d.ts (SettingDefinitionBase.desc
         // is `string | DocumentFragment`), so the provider-derived text below is only
         // recomputed when getSettingDefinitions() itself is re-run — setControlValue()
-        // calls this.update() after changing 'agent.provider' specifically to force that.
+        // calls this.safeUpdate() after changing 'agent.provider' specifically to force that.
         name: 'Model',
         desc: `Remembered separately for each provider. Currently using: ${providerMeta.label}.`,
         control: { type: 'text', key: `agent.modelByProvider.${s.agent.provider}` },
@@ -838,7 +850,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         s.triggerMode = value as TriggerMode;
         await this.save();
         // Flips visibility of the frontmatter-key / folder-path rows below.
-        this.update();
+        this.safeUpdate();
         return;
       case 'frontmatterKey':
         s.frontmatterKey = (value as string).trim() || DEFAULT_SETTINGS.frontmatterKey;
@@ -882,7 +894,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
         // Changes which of the Ollama-URL / API-key rows are visible, AND
         // the Model row's provider-derived desc text — both require a full
         // re-run of getSettingDefinitions(), not just a visibility re-check.
-        this.update();
+        this.safeUpdate();
         return;
       case 'agent.ollamaUrl':
         s.agent.ollamaUrl = (value as string).trim() || DEFAULT_SETTINGS.agent.ollamaUrl;
@@ -897,7 +909,7 @@ export class MarginNotesSettingTab extends PluginSettingTab {
           (value as string).trim().replace(/^\/+|\/+$/g, '') || DEFAULT_SETTINGS.agent.agentsFolder;
         await this.save();
         // Affects the Agent-profile dropdown's discovered options above.
-        this.update();
+        this.safeUpdate();
         return;
       case 'agent.reportsFolder':
         s.agent.reportsFolder =
