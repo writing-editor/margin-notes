@@ -21,11 +21,14 @@
    from Obsidian's own shipped core CSS, e.g.
    `.markdown-source-view.mod-cm6.readable-line-width .cm-content { max-width: var(--file-line-width); }`
    — so that one can be solved for real, by overriding the variable
-   instead of fighting the rule (see that rule's own comment below). There
+   instead of fighting the rule (see that rule's own comment below, and
+   the .cm-sizer rule after it, which turned out to reduce to the same
+   variable-based fix on inspection — its !important was removed). There
    is no equivalent published variable for .cm-content's *margin* — margin
    reservation for third-party sidebar content isn't a case core Obsidian
    itself has, so there's nothing for core to expose a variable for — which
-   is exactly why only THIS declaration keeps !important rather than both.) */
+   is why only THIS margin-right/width pair keeps !important, not the
+   others. */
 
 .cm-scroller.mn-has-margin .cm-content {
   margin-right: var(--mn-margin-width, 220px) !important;
@@ -73,21 +76,20 @@
 /* --file-line-width: none above turns OFF .cm-content's own max-width,
    but readable-line-width's actual horizontal centering lives one level
    up, on .cm-sizer (margin: 0 auto, sized off the same variable) — not
-   on .cm-content itself. Overriding the variable alone left .cm-sizer
-   still centered with real, empty margin on both sides, which is
-   exactly the gap this rule closes: .cm-content's own reserved-margin
-   width calculation (100% - marginWidth) was correct, but it was 100% of
-   an already-narrower, already-centered .cm-sizer box, not 100% of the
-   pane — so a visible dead zone opened up between the (correctly
-   positioned relative to .cm-sizer) text and the margin track (anchored
-   relative to the actual pane edge). Forcing .cm-sizer to fill the pane
-   here removes that inner centered box entirely while this plugin's
-   margin is active, matching what happens when a person turns off
-   readable-line-width by hand — confirmed as the actual fix by testing
-   that toggle directly. */
+   on .cm-content itself. .cm-sizer's own max-width is sized off
+   --file-line-width too (same as .cm-content), so the rule above already
+   collapses it to max-width: none the moment the variable is unset in
+   scope — no separate !important needed to force that half. What's left
+   is margin: 0 auto: with no max-width to center against, "auto" no
+   longer resolves to real side margins (there's no leftover space for
+   auto to distribute), but the explicit 0 auto still needs the left/right
+   values reset to a plain 0 rather than left as "auto" pointing at
+   nothing — hence this rule stays, just without !important, since normal
+   selector specificity here (an extra .mn-has-margin-scoped selector,
+   same specificity tier as the core rule it's overriding) is already
+   sufficient once max-width isn't fighting it. */
 .is-readable-line-width .cm-scroller.mn-has-margin .cm-sizer {
-  max-width: none !important;
-  margin: 0 !important;
+  margin: 0;
 }
 
 .mn-margin-track {
