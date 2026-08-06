@@ -5,6 +5,7 @@
 // change, and the stateless extensions read from. There is only ever one
 // instance of this plugin running, so this is safe.
 import type { App, TFile } from 'obsidian';
+import type { AgentProvider } from './agents';
 import { DEFAULT_SETTINGS, MarginNotesSettings } from './settings';
 
 export const runtime: { app: App | null; settings: MarginNotesSettings } = {
@@ -23,6 +24,21 @@ export const runtime: { app: App | null; settings: MarginNotesSettings } = {
 // the file to lose its decoration simultaneously for that one call. Falling
 // back to the last DEFINITE (non-null cache) reading for this file instead
 // of collapsing to false closes that gap.
+// Session-only API key override, keyed by AgentProvider id. Populated only
+// when someone picks an EXISTING keychain suggestion for a provider that
+// isn't that provider's own dedicated secret (see settings.ts's API-key
+// suggest field) rather than typing/pasting a fresh key — a fresh
+// paste always goes to that provider's own dedicated slot in
+// app.secretStorage via writeSecret, same as before. This map exists
+// so "borrow another stored key for now" doesn't require rewriting the
+// provider's own slot to do it: agentRunner.ts checks this map first,
+// then falls back to the provider's dedicated secret if nothing's set
+// here. Deliberately not part of MarginNotesSettings (never serialized to
+// data.json, in memory only) so it can't outlive the running app process —
+// it's gone the moment Obsidian restarts or the plugin reloads, which is
+// the whole point: a temporary swap, not a persisted preference.
+export const sessionSecretOverride: Partial<Record<AgentProvider, string>> = {};
+
 const lastKnownFrontmatterEnabled = new Map<string, boolean>();
 
 /**

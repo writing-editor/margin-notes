@@ -2,11 +2,9 @@ import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
 import { EditorView } from '@codemirror/view';
 import { AgentSettings, DEFAULT_SETTINGS, MarginNotesSettings, MarginNotesSettingTab } from './settings';
 import { AgentProvider, seedAgentsFolder } from './agents';
-import { loadSecretsFile, saveSecretsFile } from './secretsFile';
 import { runtime, isMarginNotesEnabled } from './runtime';
 import { noteMarkerField, forceMarginRefresh } from './noteMarkers';
 import { linkMarkerField } from './linkMarkers';
-import { registerLinkPreviewInvalidation, disposeAllLinkPreviews } from './linkPreview';
 import { marginPanel, insertNoteAt } from './marginPanel';
 import { mnTypeAutocomplete } from './typeAutocomplete';
 import { runAgent } from './agentRunner';
@@ -24,7 +22,6 @@ function getCM6View(editor: Editor): EditorView | undefined {
 
 export default class MarginNotesPlugin extends Plugin {
   settings: MarginNotesSettings = DEFAULT_SETTINGS;
-  private linkPreviewInvalidation: { unregister: () => void } | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -41,11 +38,6 @@ export default class MarginNotesPlugin extends Plugin {
     this.registerEditorExtension([noteMarkerField, linkMarkerField, marginPanel, mnTypeAutocomplete]);
     this.addSettingTab(new MarginNotesSettingTab(this.app, this));
     this.applyMarginWidth();
-    // Module-level cache in linkPreview.ts is shared across every open
-    // editor's margin column, so this is registered once here rather than
-    // per-editor — parallel to the rename/metadataCache listeners below,
-    // which are also plugin-lifetime, not per-view.
-    this.linkPreviewInvalidation = registerLinkPreviewInvalidation(this.app);
 
     // Reading-mode support: decoration only (no margin column — see
     // readingMode.ts's own top comment for the full history of why that
@@ -112,8 +104,6 @@ export default class MarginNotesPlugin extends Plugin {
 
   onunload() {
     // registerEditorExtension/registerEvent handle their own teardown.
-    this.linkPreviewInvalidation?.unregister();
-    disposeAllLinkPreviews();
     // activeWindow.cancelAnimationFrame(this.refreshRaf) → window.cancelAnimationFrame:
     // must match runRefreshRetry's own requestAnimationFrame call above
     // (obsidianmd/prefer-window-timers wants plain `window` for timer
@@ -205,17 +195,36 @@ export default class MarginNotesPlugin extends Plugin {
     // rather than letting `any` flow through every `loaded.agent` access
     // that follows.
     //
-    // `secrets` is deliberately NOT part of this type or the merge below —
-    // API keys live in their own file, api-keys.json, sitting next to (not
-    // inside) data.json specifically so a person can gitignore just that
-    // one file without also gitignoring every other setting. See
-    // secretsFile.ts's own top comment for the full reasoning.
-    type PartialSettings = Partial<Omit<MarginNotesSettings, 'agent' | 'secrets'>> & {
-      agent?: Partial<Omit<AgentSettings, 'modelByProvider'>> & { modelByProvider?: Partial<Record<AgentProvider, string>> };
+    // `secretsFallback` DOES stay part of this merge (unlike the old
+    // `secrets`, which was deliberately excluded and read from a separate
+    // file instead) — on Obsidian 1.11.4+ it just sits unused at its
+    // empty-string defaults, since real values live in
+    // app.secretStorage instead. See settings.ts's MarginNotesSettings
+    // doc comment and secretStorage.ts for the full reasoning.
+    type PartialSettings = Partial<Omit<MarginNotesSettings, 'agent'>> & {
+      /** Pre-migration field name — see the narrowPaneRatio migration below. */
+      narrowPaneRatio?: number;
+      agent?: Partial<Omit<AgentSettings, 'modelByProvider' | 'modelHistoryByProvider'>> & {
+        modelByProvider?: Partial<Record<AgentProvider, string>>;
+        modelHistoryByProvider?: Partial<Record<AgentProvider, string[]>>;
+      };
     };
     const loaded = ((await this.loadData()) ?? {}) as PartialSettings;
 
-    const secrets = await loadSecretsFile(this.app);
+    // Migrate the old marginWidth * narrowPaneRatio combination to the new
+    // direct-pixel narrowPaneCutoffPx (see settings.ts's doc comment on
+    // narrowPaneCutoffPx for why the ratio was dropped) — computed from
+    // whatever marginWidth/narrowPaneRatio this OLD data.json actually had
+    // BEFORE the merge below, so someone who'd customized either value
+    // keeps the same effective cutoff they had, rather than silently
+    // resetting to the new flat default. Only runs when the old field is
+    // actually present and the new one isn't yet — i.e. exactly once, on
+    // the first load after upgrading; a fresh install has neither field and
+    // falls straight through to DEFAULT_SETTINGS.narrowPaneCutoffPx below.
+    if (loaded.narrowPaneRatio !== undefined && loaded.narrowPaneCutoffPx === undefined) {
+      const oldMarginWidth = loaded.marginWidth ?? DEFAULT_SETTINGS.marginWidth;
+      loaded.narrowPaneCutoffPx = oldMarginWidth * loaded.narrowPaneRatio;
+    }
 
     this.settings = {
       ...DEFAULT_SETTINGS,
@@ -224,21 +233,26 @@ export default class MarginNotesPlugin extends Plugin {
         ...DEFAULT_SETTINGS.agent,
         ...(loaded.agent ?? {}),
         modelByProvider: { ...DEFAULT_SETTINGS.agent.modelByProvider, ...(loaded.agent?.modelByProvider ?? {}) },
+        // Settings files saved before this feature existed won't have
+        // this key at all — falls back to DEFAULT_SETTINGS' seeded
+        // history per provider rather than an empty dropdown.
+        modelHistoryByProvider: {
+          ...DEFAULT_SETTINGS.agent.modelHistoryByProvider,
+          ...(loaded.agent?.modelHistoryByProvider ?? {}),
+        },
       },
-      secrets,
+      secretsFallback: { ...DEFAULT_SETTINGS.secretsFallback, ...(loaded.secretsFallback ?? {}) },
     };
   }
 
   async saveSettings() {
-    // secrets is split out and saved to its own file (api-keys.json, via
-    // saveSecretsFile) rather than through this.saveData — see
-    // loadSettings' comment and secretsFile.ts for why. Destructuring it
-    // out here means a plain object spread of `this.settings` — which is
-    // what saveData ultimately serialises to data.json — never contains a
-    // `secrets` key going forward, even accidentally: there's no `secrets`
-    // property left on `rest` to serialise.
-    const { secrets, ...rest } = this.settings;
-    await Promise.all([this.saveData(rest), saveSecretsFile(this.app, secrets)]);
+    // No more split save across two files/mechanisms — the whole settings
+    // object (secretsFallback included) goes through the normal
+    // saveData() path now. On Obsidian 1.11.4+ secretsFallback just
+    // persists at its empty-string defaults, since the settings tab
+    // writes real key values straight to app.secretStorage instead (see
+    // settings.ts's readSecret/writeSecret) and never touches this field.
+    await this.saveData(this.settings);
     runtime.settings = this.settings;
     this.refreshAllEditors();
   }

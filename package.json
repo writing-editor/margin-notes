@@ -1,11 +1,12 @@
 {
   "name": "margin-notes",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Add margin notes and sidenotes to any file, with per-file selective activation and an optional AI agent that suggests and places annotations for you.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "eslint ."
   },
   "license": "MIT",
   "devDependencies": {
@@ -14,7 +15,10 @@
     "@codemirror/state": "6.5.0",
     "@codemirror/view": "^6.28.0",
     "@types/node": "^20.11.30",
+    "@typescript-eslint/parser": "^8.66.0",
     "esbuild": "^0.20.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "obsidian": "^1.5.7",
     "tslib": "^2.6.2",
     "typescript": "^5.4.5"

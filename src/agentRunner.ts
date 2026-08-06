@@ -13,8 +13,8 @@ import {
   writeOrAppendReport,
 } from './agents';
 import { insertAiNotes } from './marginPanel';
-import { decryptSecret } from './secureStorage';
-import { isMarginNotesEnabled } from './runtime';
+import { getNativeSecret, nativeSecretStorageAvailable } from './secretStorage';
+import { isMarginNotesEnabled, sessionSecretOverride } from './runtime';
 import type { MarginNotesSettings } from './settings';
 
 function getCM6View(app: App, file: TFile): EditorView | undefined {
@@ -23,12 +23,34 @@ function getCM6View(app: App, file: TFile): EditorView | undefined {
   return (view?.editor as unknown as { cm?: EditorView } | undefined)?.cm;
 }
 
-function providerConfig(settings: MarginNotesSettings) {
+/**
+ * `app` is needed here now (unlike the old decryptSecret(settings.secrets[...])
+ * version, which only ever touched the in-memory settings object) because
+ * a real key value on Obsidian 1.11.4+ lives in app.secretStorage, not in
+ * `settings` at all \u2014 see settings.ts's MarginNotesSettings doc comment
+ * and secretStorage.ts. Read fresh on every run rather than cached, so a
+ * key just pasted into the settings tab takes effect on the very next
+ * "Run agent now" without a reload, matching the existing freshness
+ * guarantee promptOptions() below already had for spelling/density.
+ *
+ * sessionSecretOverride is checked FIRST, ahead of this provider's own
+ * dedicated secret \u2014 see runtime.ts's doc comment on that map. It's a
+ * deliberately temporary, in-memory-only "borrow this other stored key for
+ * now" that a person can set from the settings tab's API-key suggestion
+ * list without touching (or overwriting) this provider's own saved key.
+ */
+function providerConfig(app: App, settings: MarginNotesSettings) {
   const providerMeta = AGENT_PROVIDERS.find((p) => p.id === settings.agent.provider)!;
+  const override = sessionSecretOverride[settings.agent.provider];
+  const apiKey =
+    override ??
+    (nativeSecretStorageAvailable()
+      ? getNativeSecret(app, providerMeta.secretField)
+      : settings.secretsFallback[providerMeta.secretField]);
   return {
     provider: settings.agent.provider,
     model: settings.agent.modelByProvider[settings.agent.provider],
-    apiKey: decryptSecret(settings.secrets[providerMeta.secretField]),
+    apiKey,
     ollamaUrl: settings.agent.ollamaUrl,
   };
 }
@@ -83,7 +105,7 @@ async function runOnFile(app: App, settings: MarginNotesSettings, file: TFile, a
   const cmView = getCM6View(app, file);
   const before = cmView ? cmView.state.doc.toString() : await app.vault.read(file);
 
-  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, before, promptOptions(settings));
+  const { placements, rejected, capped } = await runAgentChat(providerConfig(app, settings), agentPrompt, before, promptOptions(settings));
   if (placements.length === 0) return { added: 0, rejected, capped };
 
   const { reportLinkTexts, insertedLinkTexts } = await writeReportsAndBuildLinkTexts(app, settings, file, placements);
@@ -112,7 +134,7 @@ async function runOnSelection(app: App, settings: MarginNotesSettings, file: TFi
   const before = cmView.state.doc.toString();
   const selectedText = before.slice(sel.from, sel.to);
 
-  const { placements, rejected, capped } = await runAgentChat(providerConfig(settings), agentPrompt, selectedText, promptOptions(settings));
+  const { placements, rejected, capped } = await runAgentChat(providerConfig(app, settings), agentPrompt, selectedText, promptOptions(settings));
   if (placements.length === 0) return { added: 0, rejected, capped };
 
   // Shift every placement from "offset into the selected substring" to

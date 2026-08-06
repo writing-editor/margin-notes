@@ -15,14 +15,13 @@ src/
   main.ts                — plugin entry: settings, commands, refresh hooks
   runtime.ts              — settings singleton + isMarginNotesEnabled()
   settings.ts             — settings shape + settings tab UI (notes/links/agent)
-  secureStorage.ts        — OS-keychain-backed secret storage (falls back to plaintext, honestly)
+  secretStorage.ts        — wraps Obsidian's native app.secretStorage (1.11.4+); plaintext fallback below that, honestly labeled
   paragraphs.ts           — the one shared "what is a paragraph" definition (ported from lib/paragraphs.js)
   noteMarkers.ts          — ported from noteWidgets.js: [mn: ...] → superscript widget
-  linkMarkers.ts          — [[link]] → plain, underlined clickable inline text (![[embeds]] untouched, left to Obsidian)
-  linkPreview.ts          — async resolve/read/render/cache for link margin chips
-  marginLayout.ts         — shared two-pass anchor+clamp layout, generic across chip kinds
-  marginPanel.ts          — the literal margin column: builds note chips and link chips, narrow-pane/mobile gate, bulk agent insert
-  noteTypes.ts            — note-type registry (color/label) + link chip accent color
+  linkMarkers.ts          — [[link]] → plain, underlined clickable inline text, opens in a new tab
+  marginLayout.ts         — shared two-pass anchor+clamp layout for note chips
+  marginPanel.ts          — the literal margin column: builds note chips, narrow-pane/mobile gate, bulk agent insert
+  noteTypes.ts            — note-type registry (color/label) + link accent color
   typeAutocomplete.ts     — "[mn." trigger: note-type picker with color swatches
   agents.ts               — provider dispatch, paragraph-ID contract (ported from lib/ai-proxy.js)
   agentRunner.ts          — orchestrates one run across selection/file/vault scope
@@ -34,6 +33,22 @@ src/
 npm install
 npm run build     # tsc typecheck + esbuild production bundle -> main.js
 ```
+
+## Secret storage version gating
+
+`manifest.json`'s `minAppVersion` is deliberately kept below 1.11.4 (the
+Obsidian release that added `app.secretStorage`), rather than raised to
+require it. This plugin is `isDesktopOnly: false`, so raising the floor
+would lock out anyone on an older Obsidian entirely — including mobile
+users, since 1.11.4 is also when the native API became available there.
+Instead, `secretStorage.ts` checks `requireApiVersion('1.11.4')` at
+read/write time and falls back to a plaintext field in `data.json`
+(`MarginNotesSettings.secretsFallback`) when it's false, with the
+settings tab saying so plainly next to the key field rather than the two
+paths behaving identically but silently. Revisit this if a future
+minAppVersion bump ever crosses 1.11.4 anyway for an unrelated reason —
+at that point the fallback path is permanently dead code and can be
+removed.
 
 ## Git Lite
 
@@ -104,100 +119,67 @@ historical context for anyone who remembers the earlier combined version.
   normal settings (`data.json`). See "Network use" in the main README for
   how API keys specifically are stored.
 
-## Links in the margin
-
-> **For usage instructions, see
-> [`links-and-hover-zoom-user-guide.md`](links-and-hover-zoom-user-guide.md).**
-> The rest of this section is implementation notes for developers.
+## Links
 
 `[[Note Title]]`, `[[Note|Alias]]`, `[[Note#Heading]]`, and
 `[[Note#Heading|Alias]]` render inline as plain, underlined clickable text
 (no brackets, muted accent color instead of Obsidian's default blue) — same
 visual weight as surrounding prose, just distinguishable enough to notice.
-A margin chip appears next to that line with a live-rendered preview of the
-target note's content.
+Clicking one opens the target in a new tab rather than replacing the
+current one, so navigating to a linked note never costs you your place in
+the document you were reading.
 
-`![[embeds]]` are deliberately **not** part of this feature — they were
-tried (parsed, given a margin chip, left to render inline via Obsidian's
-own native embed handling too) and reverted. Obsidian's own Live Preview
-already renders `![[...]]` as a live embedded block right where it's
-written; adding a second, independent margin-chip preview on top of that
-just duplicated the same content for no benefit, and the two decorators
-(this plugin's `Decoration.replace` and Obsidian's own embed rendering)
-fighting over the same character range produced genuinely inconsistent
-bugs — sometimes the chip won, sometimes Obsidian's own embed won, with no
-reliable way to predict which. `[[links]]` don't have that overlap —
-Obsidian leaves them as plain clickable text with nothing rendered inline,
-which is exactly the gap this feature fills — so links get full treatment
-and embeds are left 100% to Obsidian.
+Links are otherwise left alone — no margin chip, no preview, nothing
+rendered beyond that inline text. The margin column is reserved
+exclusively for `[mn: ...]` notes.
 
 - **`linkMarkers.ts`** parses `[[...]]` (`target[#heading][|alias]`
   grammar) and decorates matches with a plain `<span class="mn-linktext">`
-  widget. Clicking it calls Obsidian's own `app.workspace.openLinkText()` —
-  the same link-click behavior Obsidian's built-in renderer uses. The
-  regex intentionally does NOT use a lookbehind to exclude `![[...]]` —
-  iOS's JS engine doesn't support lookbehind assertions, and using one here
-  would have silently broken every link on iPhone rather than throwing an
-  obvious error. Instead, `findLinkMarkers()` does a manual "was the
-  character right before this preceded by `!`" check against the raw text,
-  which is lookbehind-free and behaves identically.
+  widget. Clicking it calls Obsidian's own `app.workspace.openLinkText()`
+  with the "open in a new leaf" flag set — the same target-resolution
+  behavior Obsidian's built-in renderer uses, just landing in a new tab
+  instead of the current one. The regex intentionally does NOT use a
+  lookbehind to exclude `![[...]]` — iOS's JS engine doesn't support
+  lookbehind assertions, and using one here would have silently broken
+  every link on iPhone rather than throwing an obvious error. Instead,
+  `findLinkMarkers()` does a manual "was the character right before this
+  preceded by `!`" check against the raw text, which is lookbehind-free
+  and behaves identically.
 - **Nested links inside `[mn: ...]` notes.** A `[[link]]` written inside a
   note's own content (e.g. `[mn: see [[Character Bible]] for context]`) is
   swallowed into the note as plain text — it does NOT also get its own
-  underline/margin chip. `findTopLevelLinkMarkers()` (in `linkMarkers.ts`)
-  excludes any link whose range falls inside a note marker's range before
-  either the inline decoration or the margin chip layer ever sees it. This
-  matters for two reasons: (1) two different CM6 extensions each trying to
-  `Decoration.replace` overlapping, nested ranges is not something CM6
-  resolves predictably — avoiding the overlap entirely sidesteps that
-  rather than relying on undefined behavior; (2) `noteMarkers.ts`'s own
-  regex (`MN_RE`) is non-greedy and, on its own, stops at the FIRST `]` it
-  finds after the note's colon — which used to be the nested link's own
-  closing bracket, truncating the note's content and leaving stray bracket
-  characters as broken visible text. `findNoteMarkers()` now includes a
+  underline. `findTopLevelLinkMarkers()` (in `linkMarkers.ts`) excludes
+  any link whose range falls inside a note marker's range before the
+  inline decoration layer ever sees it. This matters for two reasons:
+  (1) two different CM6 extensions each trying to `Decoration.replace`
+  overlapping, nested ranges is not something CM6 resolves predictably —
+  avoiding the overlap entirely sidesteps that rather than relying on
+  undefined behavior; (2) `noteMarkers.ts`'s own regex (`MN_RE`) is
+  non-greedy and, on its own, stops at the FIRST `]` it finds after the
+  note's colon — which used to be the nested link's own closing bracket,
+  truncating the note's content and leaving stray bracket characters as
+  broken visible text. `findNoteMarkers()` now includes a
   bracket-depth-aware rescan (`findTrueNoteEnd()`) that finds the note's
   real closing bracket whenever its captured content contains an
   unbalanced `[[` — a plain note with no nested double-brackets is
   completely unaffected and takes the same fast path as before.
-- **`linkPreview.ts`** owns the async side: resolving the link target via
-  `app.metadataCache.getFirstLinkpathDest()` (re-checked fresh on every
-  call — a link that briefly fails to resolve is never treated as a
-  permanently stable "missing" answer), reading its content with
-  `app.vault.cachedRead()`, and caching the fetched **markdown string**
-  (not a rendered DOM element) keyed by the resolved file's path, so
-  multiple links to the same note share one fetch. Each individual chip
-  then renders its **own independent DOM element** from that shared string
-  via `renderForConsumer()`, with its own `Component` for lifecycle. This
-  replaced an earlier design that cached one shared, already-rendered
-  `HTMLElement` per target and handed it to every chip referencing that
-  file — which was broken, since a DOM node can only ever have one parent:
-  whichever chip called `replaceChildren()` on the shared node last would
-  silently steal it away from every earlier chip pointing at the same
-  note, producing exactly the symptom "the same note linked twice on a
-  page — only one of the two chips ever shows a preview, and which one is
-  order/timing-dependent." A broken link shows a distinct "note not found"
-  chip state instead of a blank or throwing chip, and self-corrects the
-  next time it's checked once the target file exists. The cache
-  invalidates and live-updates every subscribed chip when the target file
-  is modified (`vault.on('modify')`).
-- **`marginLayout.ts`** is the shared positioning/clamping engine both note
-  chips and link chips run through — a generic `MarginItem` interface
-  (`{ from, id, buildChip() }`) plus a two-pass "compute every anchor's true
-  position first, then place chips top-down clamping only when the *next*
-  item's real anchor demands it" layout. `marginPanel.ts` merges note
-  markers and (top-level only — see above) link markers into one
-  document-order list before handing it to this pass, so a note and a link
-  near each other on the page get clamping decisions that correctly
-  account for both as neighbors — not two independently-computed layouts
-  fighting over the same vertical space.
-- **Hover-zoom.** Every margin chip — note or link, clamped or not —
-  scales up and lifts on `:hover` (pure CSS `transform` + `box-shadow`, no
-  JS involved in the motion itself), showing its full unclamped content.
-  It's pinned to the margin's own horizontal position
-  (`transform-origin: right center`, matching the track's right-aligned
-  layout) so a zoomed chip never grows toward or over the main text — only
-  leftward/vertically, within the reserved margin space. This has zero
-  effect on the editor's own cursor, selection, or focus.
+- **`marginLayout.ts`** is the shared positioning/clamping engine for note
+  chips — a generic `MarginItem` interface (`{ from, id, buildChip() }`)
+  plus a two-pass "compute every anchor's true position first, then place
+  chips top-down clamping only when the *next* item's real anchor demands
+  it" layout. `marginPanel.ts` maps `[mn: ...]` note markers into this
+  shape before handing them to the pass; links never enter this pipeline
+  at all, since they don't get a chip.
+- **Hover-zoom.** Every margin note chip, clamped or not, scales up and
+  lifts on `:hover` (pure CSS `transform` + `box-shadow`, no JS involved
+  in the motion itself), showing its full unclamped content. It's pinned
+  to the margin's own horizontal position (`transform-origin: right
+  center`, matching the track's right-aligned layout) so a zoomed chip
+  never grows toward or over the main text — only leftward/vertically,
+  within the reserved margin space. This has zero effect on the editor's
+  own cursor, selection, or focus. Links have no chip, so hover-zoom
+  doesn't apply to them — the inline text itself just gets a lighter/
+  darker opacity change on hover, no scaling.
 - **Narrow-pane / split-view / mobile.** The chip column (built by
   `marginPanel.ts`'s `MarginColumn`) hides itself — while
   `noteMarkerField`'s superscripts and `linkMarkerField`'s underlined link
@@ -251,34 +233,29 @@ that actually affects how you use the plugin.
 the document body, decorated by CodeMirror into a superscript widget +
 margin chip — there's no separate file or footnote involved for these.
 
-`[[links]]` are the second, link-backed kind mentioned as a future
-direction in earlier drafts of this README — that direction has now
-shipped (see "Links in the margin" above). Unlike `mn` notes, links don't
-store any content themselves; the margin chip is a live preview of
-whatever the target note currently contains, fetched and cached by
-`linkPreview.ts`. `![[embeds]]` are intentionally not part of this — see
-above for why.
+`[[links]]` are the second kind of marker this plugin understands, but
+they don't store or preview any content themselves — they're just
+Obsidian's own wikilink syntax, rendered as clean inline text and opened
+in a new tab on click. There's no margin presence for them at all.
 
 ## A possible future direction: richer link-opening
 
-Margin-chip clicks currently open the link's target in a single reused
-split to the right of the pane (`marginPanel.ts`'s `openInCompanionSplit`)
-— clicking several different chips swaps that one companion pane's
-content rather than piling up new splits. This is deliberately kept
-simple for now rather than adding more click modes, but Obsidian's public
-API does support a couple of things worth considering later if there's a
-real need:
+Clicking a `[[link]]` currently opens the target in a new tab
+(`linkMarkers.ts`'s `LinkInlineWidget`, via `openLinkText(..., true)`).
+This is deliberately kept simple for now rather than adding more click
+modes, but Obsidian's public API does support a couple of things worth
+considering later if there's a real need:
 
 - `app.workspace.openPopoutLeaf()` — opens the target in a genuinely
   separate OS-level window (desktop only), closer to a detached
-  browser-tab feel than an in-window split.
-- Wiring the chip into Obsidian's own native hover-preview popover (the
+  browser-tab feel than a same-window tab.
+- Wiring the link into Obsidian's own native hover-preview popover (the
   same transient floating preview a normal `[[link]]` already gets on
-  hover), as a no-click "peek" option.
+  hover in Obsidian core), as a no-click "peek" option.
 
 Not implemented — noted here in case it's worth revisiting, but the
-current single-reused-split behavior covers the common case without
-adding another setting or click-mode for people to learn.
+current new-tab behavior covers the common case without adding another
+setting or click-mode for people to learn.
 
 ## A possible future direction: more/different agent types
 

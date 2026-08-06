@@ -29,6 +29,23 @@
 
 .cm-scroller.mn-has-margin .cm-content {
   margin-right: var(--mn-margin-width, 220px) !important;
+  /* margin-right ALONE only shrinks .cm-content correctly when it's a
+     plain auto-width block box \u2014 that's the normal CSS behaviour (an
+     auto-width block automatically deducts its margin from the space it
+     fills). But CM6 in a narrow SPLIT pane can end up with .cm-content
+     sized by an ancestor flex/width rule instead of staying a plain auto
+     box (Obsidian's own .cm-sizer / readable-line-width machinery sets
+     width on ancestors, not always leaving .cm-content itself as auto) \u2014
+     once that happens, margin-right pushes the box's right edge PAST its
+     container instead of shrinking it, and the overflowing text renders
+     right under the margin track. That's the split-pane bug this line
+     fixes: forcing width explicitly to "100% minus the margin" makes the
+     shrink unconditional or however narrow .cm-content's ancestor
+     resolves it, rather than depending on margin-right's auto-block
+     behaviour still applying. !important for the same reason as the
+     margin-right rule above \u2014 this has to reliably beat Obsidian's own
+     core width rules and every third-party theme's overrides of them. */
+  width: calc(100% - var(--mn-margin-width, 220px)) !important;
 }
 
 /* Obsidian's "readable line length" centers .cm-content with a max-width;
@@ -53,11 +70,38 @@
   --file-line-width: none;
 }
 
+/* --file-line-width: none above turns OFF .cm-content's own max-width,
+   but readable-line-width's actual horizontal centering lives one level
+   up, on .cm-sizer (margin: 0 auto, sized off the same variable) — not
+   on .cm-content itself. Overriding the variable alone left .cm-sizer
+   still centered with real, empty margin on both sides, which is
+   exactly the gap this rule closes: .cm-content's own reserved-margin
+   width calculation (100% - marginWidth) was correct, but it was 100% of
+   an already-narrower, already-centered .cm-sizer box, not 100% of the
+   pane — so a visible dead zone opened up between the (correctly
+   positioned relative to .cm-sizer) text and the margin track (anchored
+   relative to the actual pane edge). Forcing .cm-sizer to fill the pane
+   here removes that inner centered box entirely while this plugin's
+   margin is active, matching what happens when a person turns off
+   readable-line-width by hand — confirmed as the actual fix by testing
+   that toggle directly. */
+.is-readable-line-width .cm-scroller.mn-has-margin .cm-sizer {
+  max-width: none !important;
+  margin: 0 !important;
+}
+
 .mn-margin-track {
   position: absolute;
   top: 0;
-  right: 8px;
-  width: calc(var(--mn-margin-width, 220px) - 16px);
+  /* Flush against .cm-content's actual right edge, with NO left-side gap
+     — any leftover space when marginWidth doesn't perfectly use up the
+     available room should sit at the far right of the pane, not between
+     the text and the notes. (This used to add +8px of breathing room
+     here; per explicit preference that gap is now removed rather than
+     relocated — see the -8px on width below for where the remaining
+     breathing room actually lives now, on the track's own right side.) */
+  left: calc(100% - var(--mn-margin-width, 220px));
+  width: calc(var(--mn-margin-width, 220px) - 8px);
   pointer-events: none;
   /* Explicit (was implicit/default before): a hovered chip legitimately
      needs to render outside the track's own box when scaled up by the
@@ -78,9 +122,7 @@
 }
 
 /* --- Inline link text (plain-prose rendering of [[...]]) --- */
-/* Note: ![[embeds]] are never styled here — this plugin doesn't touch
-   embeds' inline appearance at all; Obsidian renders those on its own.
-   Originally spec'd as fully color-inherited with only a hover cue, but
+/* Originally spec'd as fully color-inherited with only a hover cue, but
    that reads as indistinguishable from plain prose at rest — too subtle to
    discover. Compromise: a permanent, muted accent color + underline that's
    visibly a link without being Obsidian's loud default blue. Distinct from
@@ -138,16 +180,16 @@
   right: 0;
   pointer-events: auto;
   cursor: pointer;
-  /* Plain book-sidenote look by default: no fill, no border box at all —
-     just text sitting in the margin. The boxed/bordered "chip" treatment
-     (background, border, left accent bar, radius, padding) is reintroduced
-     below scoped to .mn-chip-link only, since link previews still need a
-     visually distinct container (they're rendering someone else's note
-     content, not a short annotation). */
+  /* Plain book-sidenote look: no fill, no border box at all — just text
+     sitting in the margin next to the mn: note it annotates. */
   background: transparent;
   border: none;
   border-radius: 0;
-  padding: 0;
+  /* A small left inset only, so chip text doesn't sit pixel-flush
+     against the text/margin boundary now that .mn-margin-track itself
+     has no left-side gap (see that rule's own comment — any leftover
+     breathing room belongs on the far right of the pane, not here). */
+  padding: 0 0 0 6px;
   /* Falls back to a fixed 12px only if the plugin never sets the variable
      (e.g. CSS loaded before main.ts's applyMarginWidth() runs once on
      load). Normally set from settings.ts's chipFontRatio, expressed as a
@@ -160,11 +202,9 @@
   /* CRITICAL: without this, max-height below only constrains the CONTENT
      box — with a border/padding present that would render ON TOP of it,
      making a clamped chip render taller than marginLayout.ts's layout math
-     accounted for. Kept even now that the plain sidenote has no border/
-     padding of its own, since .mn-chip-link below still does. border-box
-     makes max-height mean "this chip's total rendered height, border and
-     padding included," matching what the layout pass actually reserves
-     space for. */
+     accounted for. border-box makes max-height mean "this chip's total
+     rendered height, border and padding included," matching what the
+     layout pass actually reserves space for. */
   box-sizing: border-box;
   /* Set per-chip from marginPanel.ts to the room actually available before
      the next chip's anchor — "none" when there's no crowding, so an
@@ -174,30 +214,20 @@
   max-height: var(--mn-chip-max-height, none);
   overflow: hidden;
   /* Unified hover-zoom base (see .mn-chip:hover below, which replaces the
-     old clamped-only hover rule from Gotcha #4). transform-origin: right
-     center is deliberate: chips are right-aligned in the margin track
-     (.mn-margin-track has right: 8px), so scaling from the right edge grows
-     the chip leftward/vertically only — never toward .cm-content. */
-  transform-origin: right center;
+     old clamped-only hover rule from Gotcha #4). transform-origin: left
+     center is deliberate: the margin track is now anchored flush against
+     .cm-content's left side (see .mn-margin-track's own comment), so
+     scaling from the LEFT edge grows the chip rightward/vertically only
+     — never back toward .cm-content. (This used to be "right center"
+     when the track was anchored to the pane's right edge instead —
+     scaling from the right grew chips leftward, which was safe under
+     that anchoring but would grow straight into the prose under this
+     one.) */
+  transform-origin: left center;
   transform: scale(1);
   transition: transform 60ms ease-out, box-shadow 60ms ease-out, max-height 60ms ease-out, padding 60ms ease-out, background 60ms ease-out, border-color 60ms ease-out;
 }
 
-/* --- Boxed chip container, link previews only --- */
-/* Everything the plain .mn-chip used to have (fill, border, left accent
-   bar, rounded corners, padding) lives here now, scoped to .mn-chip-link
-   so plain mn: sidenotes stay borderless/backgroundless while link
-   previews keep a visually distinct container. buildLinkChip() (in
-   marginPanel.ts) always adds both classes ("mn-chip mn-chip-link"), so
-   this always layers on top of the plain base above rather than
-   replacing it. */
-.mn-chip-link {
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-left: 3px solid var(--text-accent);
-  border-radius: 4px;
-  padding: 4px 8px;
-}
 
 /* Only applied (via JS adding this class) when max-height actually clamps
    the chip's natural content — an unclamped chip gets no fade, since there's
@@ -265,8 +295,7 @@
      transiently while computing availableHeight, then moves on).
      A shadow on the zoomed chip itself sidesteps this: it lifts THIS
      chip visually off whatever is behind it, whichever chip that turns
-     out to be, without needing to identify it. Self-contained, same
-     "lift off the stack" depth cue link chips already get on hover. */
+     out to be, without needing to identify it. */
   box-shadow: 0 6px 16px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.35));
 }
 
@@ -280,17 +309,6 @@
    button uncropped. */
 .mn-chip:hover {
   overflow: visible;
-}
-
-/* Link chips are still a bordered/filled box even at rest (see
-   .mn-chip-link above) — on hover they additionally get the "lift off the
-   stack" shadow, which reads as an intentional depth cue against their
-   own box. Plain sidenotes have no box to lift, so that same shadow
-   reads as a stray gray smear floating behind bare text instead — hence
-   scoped to .mn-chip-link only, not the shared base .mn-chip:hover rule. */
-.mn-chip-link:hover {
-  border-color: transparent;
-  box-shadow: 0 8px 24px var(--background-modifier-box-shadow, rgba(0, 0, 0, 0.3));
 }
 
 /* Plain mn: sidenote label: a small superscript number sitting at the
@@ -311,20 +329,6 @@
   margin-right: 2px;
   /* color set inline per-note from marginPanel.ts, same variable the old
      border-left used (noteTypeColor(marker.type)) */
-}
-
-/* Link-preview chips keep the old inline muted-prefix look — they're
-   still a boxed container (see .mn-chip-link above), and a floating
-   superscript numeral reads oddly sitting inside a bordered box. */
-.mn-chip-link .mn-chip-label {
-  display: inline;
-  font-weight: 600;
-  font-size: inherit;
-  vertical-align: baseline;
-  position: static;
-  top: auto;
-  color: var(--text-muted);
-  margin-right: 4px;
 }
 
 /* --- Chip delete button --- */
@@ -385,57 +389,10 @@
   border-color: var(--background-modifier-error);
 }
 
-/* --- Confirm-delete modal (linked-file deletion only) --- */
-
-.mn-confirm-delete-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 .mn-chip-text {
   word-break: break-word;
 }
 
-/* --- Link preview chip body (linkPreview.ts's rendered content) --- */
-
-.mn-chip-link-body {
-  display: block;
-  word-break: break-word;
-}
-
-/* Rendered markdown preview content inherits chip font-size/line-height by
-   default; keep it from ballooning if the target note's own styles set
-   larger headings etc. — this is a small margin chip, not a full pane. */
-.mn-chip-link-body :is(h1, h2, h3, h4, h5, h6) {
-  font-size: inherit;
-  font-weight: 600;
-  margin: 0 0 2px 0;
-}
-
-.mn-chip-link-body p {
-  margin: 0 0 4px 0;
-}
-
-/* Subtle pulse while the async fetch-resolve-render (linkPreview.ts) is in
-   flight — chip already shows the bare title synchronously (see
-   buildLinkChip), this is just a "still loading" affordance layered on. */
-.mn-chip-link:not(.mn-chip-link-loaded):not(.mn-chip-link-missing) .mn-chip-link-body {
-  opacity: 0.6;
-}
-
-/* Broken-link / render-error state (Gotcha #5): muted, dashed border,
-   distinct from a normal chip so it never silently looks like a working
-   preview. */
-.mn-chip-link.mn-chip-link-missing {
-  border-left-style: dashed;
-}
-
-.mn-chip-link.mn-chip-link-missing .mn-chip-link-body {
-  color: var(--text-muted);
-  font-style: italic;
-}
 /* Settings-tab warning shown above the API key field when secureStorage.ts
    couldn't get a real OS-backed encryption path this session (see its
    AvailabilityReason states) — deliberately more visible than the default

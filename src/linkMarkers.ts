@@ -5,18 +5,10 @@ import { isMarginNotesEnabled, runtime } from './runtime';
 import { forceMarginRefresh, findNoteMarkers } from './noteMarkers';
 
 // Matches [[...]], capturing everything between the double brackets. This
-// plugin deliberately does NOT touch ![[embeds]] at all — not in text, not
-// in the margin. Embeds were tried (parsed, given their own margin chip
-// AND left to Obsidian's native inline embed rendering) and reverted: it
-// meant the same content showed twice (once live-embedded in the running
-// text via Obsidian itself, once again as a margin chip), which added
-// visual clutter and complexity without benefit — Obsidian's own inline
-// embed rendering already IS the "live preview," right in the text where
-// it's written. `[[links]]` don't have that overlap: Obsidian leaves them
-// as plain clickable text with no inline preview, which is exactly the gap
-// this plugin's margin chip fills. So links get full treatment (inline
-// plain-text widget + margin chip + async preview); embeds get none of it
-// and are left 100% to Obsidian.
+// plugin only ever deals in plain `[[links]]`: Obsidian leaves them as
+// plain clickable text with no inline preview, so this widget's job is
+// just to render that text cleanly and open the target when clicked —
+// nothing more.
 //
 // The regex itself does NOT exclude a leading "!" (no negative lookbehind
 // here) — Obsidian's own mobile JS engine (iOS/Safari's older WebKit
@@ -31,8 +23,6 @@ import { forceMarginRefresh, findNoteMarkers } from './noteMarkers';
 //   [[Note|Alias]]                -> target: Note, alias: Alias
 //   [[Note#Heading]]               -> target: Note, heading: Heading
 //   [[Note#Heading|Alias]]         -> target: Note, heading: Heading, alias: Alias
-// Explicitly NOT matched (left to Obsidian entirely):
-//   ![[Note]], ![[Note#Heading]], etc. — filtered out in findLinkMarkers().
 export const LINK_RE = /\[\[([^\]]+)\]\]/g;
 
 export interface LinkMarker {
@@ -96,8 +86,10 @@ export function findLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
   let match: RegExpExecArray | null;
   LINK_RE.lastIndex = 0;
   while ((match = LINK_RE.exec(text))) {
-    // Reject ![[...]] embeds — see LINK_RE's comment for why this is a
-    // manual character check rather than a regex lookbehind.
+    // Skip a leading "!" (an embed, e.g. ![[Note]]) — see LINK_RE's
+    // comment for why this is a manual character check rather than a
+    // regex lookbehind. Embeds are left entirely to Obsidian's own
+    // native rendering; this plugin doesn't touch them.
     if (match.index > 0 && text[match.index - 1] === '!') continue;
     const inner = match[1];
     const { linkpath, heading, alias } = parseLinkInner(inner);
@@ -119,12 +111,11 @@ export function findLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
  * Same as findLinkMarkers(), but excludes any link whose range falls
  * inside an [mn: ...] note's own range (see buildDecorations()'s comment
  * for why nested links are suppressed rather than double-decorated). This
- * is the version marginPanel.ts should call for building margin chips —
- * using the raw findLinkMarkers() there instead would produce a margin
- * chip for a link that isn't actually rendered as a clickable inline
- * widget (since buildDecorations() below independently suppresses it),
- * which would be a confusing mismatch: a chip in the margin pointing at
- * text that doesn't behave like a link where it's written.
+ * is the version other modules (e.g. readingMode.ts) should call when
+ * they need to line up with what's actually rendered as a clickable
+ * inline widget — using the raw findLinkMarkers() instead would count a
+ * link that buildDecorations() below independently suppresses (because a
+ * note already claims that range), which would be a confusing mismatch.
  */
 export function findTopLevelLinkMarkers(doc: EditorState['doc']): LinkMarker[] {
   const links = findLinkMarkers(doc);
@@ -163,7 +154,14 @@ class LinkInlineWidget extends WidgetType {
       evt.stopPropagation();
       const app = runtime.app;
       if (!app) return;
-      app.workspace.openLinkText(this.linkpath, this.sourcePath).catch((err: unknown) => {
+      // Opens in a new split to the right, same as the old margin-chip
+      // click behavior — a quick "look at this too" action, not a
+      // navigation away from the document you're currently reading/
+      // editing. openLinkText's third argument only accepts a boolean
+      // (new tab) or 'tab'/'split'/'window' — passing the literal string
+      // 'split' is what actually gets a vertical split instead of a
+      // same-pane new tab.
+      app.workspace.openLinkText(this.linkpath, this.sourcePath, 'split').catch((err: unknown) => {
         console.error('Margin Notes: failed to open link', this.linkpath, err);
         new Notice(`Margin Notes: couldn't open "${this.linkpath}".`);
       });
@@ -240,10 +238,3 @@ export const linkMarkerField = StateField.define<DecorationSet>({
   },
   provide: (field) => EditorView.decorations.from(field),
 });
-
-/** Same enablement gate as buildDecorations(), exposed for the margin panel. */
-export function getActiveLinkMarkers(state: EditorState): LinkMarker[] {
-  const info = state.field(editorInfoField, false);
-  if (!isMarginNotesEnabled(info?.file ?? null)) return [];
-  return findTopLevelLinkMarkers(state.doc);
-}

@@ -336,12 +336,10 @@ async function ensureFolderExists(app: App, path: string): Promise<void> {
  * Writes `reportContent` to `path`, appending to the file if a run
  * earlier the same day already created it for this exact source-file/
  * agent pair (see buildReportFilePath's doc comment for the reuse
- * window), rather than overwriting or creating a duplicate. Mirrors
- * `openInCompanionSplit`'s "reuse if it still exists" pattern (see
- * marginPanel.ts) — checked fresh via getAbstractFileByPath each call
- * rather than a cached reference, since the underlying object here is a
- * vault path a person could have renamed or deleted between runs, not an
- * in-memory workspace leaf.
+ * window), rather than overwriting or creating a duplicate — checked
+ * fresh via getAbstractFileByPath each call rather than a cached
+ * reference, since a person could have renamed or deleted the file
+ * between runs.
  *
  * Each append is visually separated with a horizontal rule and a small
  * timestamp heading so multiple same-day runs (e.g. re-running the agent
