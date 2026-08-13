@@ -216,16 +216,22 @@
   max-height: var(--mn-chip-max-height, none);
   overflow: hidden;
   /* Unified hover-zoom base (see .mn-chip:hover below, which replaces the
-     old clamped-only hover rule from Gotcha #4). transform-origin: left
-     center is deliberate: the margin track is now anchored flush against
-     .cm-content's left side (see .mn-margin-track's own comment), so
-     scaling from the LEFT edge grows the chip rightward/vertically only
-     — never back toward .cm-content. (This used to be "right center"
-     when the track was anchored to the pane's right edge instead —
-     scaling from the right grew chips leftward, which was safe under
-     that anchoring but would grow straight into the prose under this
-     one.) */
-  transform-origin: left center;
+     old clamped-only hover rule from Gotcha #4). transform-origin: right
+     center: the chip's right edge sits flush against the margin track's
+     own right edge, which in turn sits near the pane/viewport's right
+     edge (see .mn-margin-track's own comment on the 8px gutter) — there
+     is little to no room to grow further right. Scaling from the RIGHT
+     edge instead grows the chip only leftward/vertically, back toward
+     .cm-content and the track's own interior, where there's actual space.
+     (This was "left center" before, on the reasoning that the track sits
+     flush against .cm-content's left side — true, but irrelevant: it's
+     the chip's proximity to the viewport's RIGHT edge, not the track's
+     left edge, that determines which direction is safe to grow into. On
+     any chip near the right edge of the window, growing rightward pushed
+     the zoomed chip and its delete button straight off-screen, clipped
+     by the viewport itself — no ancestor overflow or z-index fix can
+     reveal something rendered outside the visible window.) */
+  transform-origin: right center;
   transform: scale(1);
   transition: transform 60ms ease-out, box-shadow 60ms ease-out, max-height 60ms ease-out, padding 60ms ease-out, background 60ms ease-out, border-color 60ms ease-out;
 }
@@ -308,9 +314,18 @@
    child of the chip and only escapes the box visually, not in the DOM.
    Split out from the clamped-only rule above so an uncontested chip
    (no zoom, no scale, per the earlier fix) still reveals its delete
-   button uncropped. */
+   button uncropped.
+   z-index is also needed here, not just on the clamped:hover rule above:
+   chips are stacked top-down in DOM order inside .mn-margin-track, so
+   without a lift, a later (lower) chip paints over an earlier chip's
+   overflowing delete button the moment that earlier chip is hovered —
+   the button is visible in the DOM/layout sense but visually covered by
+   the next sidenote down. Matches the clamped rule's z-index: 20 so both
+   paths land the hovered chip on the same stacking level, with the
+   delete button's own z-index: 21 then correctly on top of that. */
 .mn-chip:hover {
   overflow: visible;
+  z-index: 20;
 }
 
 /* Plain mn: sidenote label: a small superscript number sitting at the
@@ -334,19 +349,29 @@
 }
 
 /* --- Chip delete button --- */
-/* Pinned to the chip's own top-right corner, half outside the chip's own
-   box (like a badge), NOT inside its padding — deliberately distinct from
-   the "×" pattern users associate with "close/dismiss this popup", since
-   that would read as "collapse the hover-zoom" rather than "delete the
-   note". A trash-can icon makes the destructive action unambiguous at a
-   glance. Hidden at rest; only fades/scales in once .mn-chip:hover is
-   already active (i.e. after the chip's own zoom has kicked in), and is
-   removed from layout flow via position:absolute so it never affects
-   marginLayout.ts's offsetHeight measurements of the chip itself. */
+/* Pinned to the chip's own top-right corner. Previously this sat half
+   OUTSIDE the chip's own box (top:-6px/right:-6px, like a badge) — but
+   .mn-chip's right edge is flush with .mn-margin-track's own right edge
+   (both are right:0 against the track), and the track itself stops only
+   8px short of .cm-scroller's right edge (see .mn-margin-track's own
+   comment). That left the button overhanging into a razor-thin margin
+   that .cm-scroller — the actual scrolling element, with its own
+   overflow-x clipping — could and did eat into, especially once a
+   vertical scrollbar's width or a theme's own scroller padding ate any
+   of that 8px. overflow:visible on the hovered chip/track (below) only
+   controls THEIR own clipping, not an ancestor's, so it couldn't fix
+   this. Pulling the button fully back inside the chip's own box (top:2px/
+   right:2px instead of negative insets) removes the dependency on that
+   ancestor gutter entirely — the button can never render somewhere an
+   ancestor might clip, regardless of scrollbar width or theme padding.
+   Still reads clearly as a distinct badge thanks to its own circular
+   background/border sitting on top of the chip's zoomed backing.
+   Kept as position:absolute (not in normal flow) so it still never
+   affects marginLayout.ts's offsetHeight measurements of the chip. */
 .mn-chip-delete {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: 2px;
+  right: 2px;
   width: 18px;
   height: 18px;
   padding: 0;
